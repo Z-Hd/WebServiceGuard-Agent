@@ -1,55 +1,75 @@
-class BaseError(Exception):
-    """基础错误类"""
-    def __init__(self, code, message, retryable=False, source=None):
-        self.code = code
-        self.message = message
-        self.retryable = retryable
-        self.source = source
-        super().__init__(message)
+"""Unified error object and error code definitions used across the whole system."""
 
-class ToolError(BaseError):
-    """工具错误"""
-    pass
+from __future__ import annotations
 
-class AgentError(BaseError):
-    """Agent错误"""
-    pass
+from dataclasses import asdict, dataclass
+from typing import Any
 
-class WorkflowError(BaseError):
-    """工作流错误"""
-    pass
 
-class ConfigurationError(BaseError):
-    """配置错误"""
-    pass
+ORCH_INVALID_INPUT = "ORCH_INVALID_INPUT"
+ORCH_INVALID_TOOL_NAME = "ORCH_INVALID_TOOL_NAME"
+ORCH_MISSING_AGENT_TYPE = "ORCH_MISSING_AGENT_TYPE"
+ORCH_MISSING_USER_PROMPT = "ORCH_MISSING_USER_PROMPT"
+ORCH_INVALID_AGENT_TYPE = "ORCH_INVALID_AGENT_TYPE"
+ORCH_INVALID_STAGE_JUMP = "ORCH_INVALID_STAGE_JUMP"
+ORCH_INVALID_MAIN_TURN = "ORCH_INVALID_MAIN_TURN"
+ORCH_MAX_ITERATIONS_EXCEEDED = "ORCH_MAX_ITERATIONS_EXCEEDED"
+ORCH_MAX_MAIN_TURNS_REACHED = "ORCH_MAX_MAIN_TURNS_REACHED"
+ORCH_AGENT_TOOL_ERROR = "ORCH_AGENT_TOOL_ERROR"
 
-# 错误码定义
-ERROR_CODES = {
-    # 工具错误
-    "TOOL_READ_LOG_FAILED": "读取日志失败",
-    "TOOL_READ_CODE_FAILED": "读取代码失败",
-    "TOOL_EDIT_CODE_FAILED": "修改代码失败",
-    "TOOL_RUN_TEST_FAILED": "运行测试失败",
-    "TOOL_GIT_COMMIT_FAILED": "Git提交失败",
-    "TOOL_FEISHU_NOTIFY_FAILED": "飞书通知失败",
-    
-    # Agent错误
-    "AGENT_EXPLORE_FAILED": "探索Agent失败",
-    "AGENT_PLAN_FAILED": "规划Agent失败",
-    "AGENT_EXECUTE_FAILED": "执行Agent失败",
-    "AGENT_VERIFY_FAILED": "验证Agent失败",
-    
-    # 工作流错误
-    "WORKFLOW_NO_TRACEBACK": "无有效Traceback",
-    "WORKFLOW_NO_REPO": "无法定位仓库",
-    "WORKFLOW_MAX_ITERATIONS": "达到最大迭代次数",
-    "WORKFLOW_HIGH_RISK": "高风险操作",
-    "WORKFLOW_TEST_FAILED": "测试失败",
-    
-    # 配置错误
-    "CONFIG_MISSING": "配置缺失",
-    "CONFIG_INVALID": "配置无效",
-    
-    # 其他错误
-    "UNKNOWN_ERROR": "未知错误"
-}
+EXPLORE_CONTEXT_INSUFFICIENT = "EXPLORE_CONTEXT_INSUFFICIENT"
+
+PLAN_INSUFFICIENT_EVIDENCE = "PLAN_INSUFFICIENT_EVIDENCE"
+PLAN_UNACTIONABLE_REPAIR_PLAN = "PLAN_UNACTIONABLE_REPAIR_PLAN"
+
+EXECUTE_PATCH_APPLY_FAILED = "EXECUTE_PATCH_APPLY_FAILED"
+EXECUTE_PLAN_DEVIATION = "EXECUTE_PLAN_DEVIATION"
+
+VERIFY_TARGETED_TEST_FAILED = "VERIFY_TARGETED_TEST_FAILED"
+VERIFY_SMOKE_TEST_FAILED = "VERIFY_SMOKE_TEST_FAILED"
+VERIFY_TEST_ENVIRONMENT_ERROR = "VERIFY_TEST_ENVIRONMENT_ERROR"
+
+TOOL_READ_LOG_FAILED = "TOOL_READ_LOG_FAILED"
+TOOL_READ_CODE_FAILED = "TOOL_READ_CODE_FAILED"
+TOOL_EDIT_CODE_FAILED = "TOOL_EDIT_CODE_FAILED"
+TOOL_RUN_TEST_FAILED = "TOOL_RUN_TEST_FAILED"
+TOOL_GIT_COMMIT_FAILED = "TOOL_GIT_COMMIT_FAILED"
+TOOL_FEISHU_NOTIFY_FAILED = "TOOL_FEISHU_NOTIFY_FAILED"
+
+ORCH_AGENT_TOOL_NOT_FOUND = "ORCH_AGENT_TOOL_NOT_FOUND"
+ORCH_AGENT_TOOL_EXECUTION_ERROR = "ORCH_AGENT_TOOL_EXECUTION_ERROR"
+ORCH_AGENT_MAX_TURNS_REACHED = "ORCH_AGENT_MAX_TURNS_REACHED"
+ORCH_AGENT_FAILED = "ORCH_AGENT_FAILED"
+
+
+@dataclass(slots=True)
+class ErrorRecord:
+    """Stable structured error object used across the whole system."""
+
+    code: str
+    message: str
+    retryable: bool
+    stage: str
+    source: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def make_error(
+    *,
+    code: str,
+    message: str,
+    retryable: bool,
+    stage: str,
+    source: str,
+) -> dict[str, Any]:
+    """Create a normalized error dictionary."""
+
+    return ErrorRecord(
+        code=code,
+        message=message,
+        retryable=retryable,
+        stage=stage,
+        source=source,
+    ).to_dict()

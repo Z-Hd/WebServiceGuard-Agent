@@ -1,39 +1,36 @@
-from typing import List, Optional, Dict, Any
-from web_service_guard.enums import ToolStatus
+"""Tool-result contracts exposed by AgentTool and primitive tools."""
 
-class ToolResult:
-    """工具执行结果"""
-    def __init__(self, run_id: str, iteration: int, tool_name: str, status: ToolStatus, summary: str, output: Dict[str, Any], artifacts: List[str], errors: List[Dict[str, Any]]):
-        self.run_id = run_id
-        self.iteration = iteration
-        self.tool_name = tool_name
-        self.status = status
-        self.summary = summary
-        self.output = output
-        self.artifacts = artifacts
-        self.errors = errors
-    
-    def to_dict(self):
-        return {
-            "run_id": self.run_id,
-            "iteration": self.iteration,
-            "tool_name": self.tool_name,
-            "status": self.status.value,
-            "summary": self.summary,
-            "output": self.output,
-            "artifacts": self.artifacts,
-            "errors": self.errors
-        }
-    
-    @classmethod
-    def from_dict(cls, data):
-        return cls(
-            run_id=data.get('run_id'),
-            iteration=data.get('iteration', 0),
-            tool_name=data.get('tool_name'),
-            status=ToolStatus(data.get('status', 'FAILED')),
-            summary=data.get('summary', ''),
-            output=data.get('output', {}),
-            artifacts=data.get('artifacts', []),
-            errors=data.get('errors', [])
-        )
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+from schemas.agent_messages import ToolCall
+from schemas.run_result import ToolExecutionRecord
+
+
+@dataclass(slots=True)
+class AgentToolResult:
+    """Structured result returned by AgentTool for parent orchestration."""
+
+    agent_id: str
+    agent_type: str
+    run_id: str | None
+    iteration: int | None
+    summary: str
+    status: str
+    stop_reason: str
+    turn_count: int
+    allowed_tools: list[str]
+    permission_mode: str
+    read_only: bool
+    tool_calls: list[ToolCall]
+    tool_results: list[ToolExecutionRecord]
+    used_tools: list[str]
+    started_at: str
+    finished_at: str
+    output: dict[str, Any] = field(default_factory=dict)
+    artifacts: list[str] = field(default_factory=list)
+    errors: list[dict[str, Any]] = field(default_factory=list)
+    error: str | None = None
+    audit_record: Any | None = None
