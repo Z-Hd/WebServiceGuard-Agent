@@ -39,6 +39,7 @@ class ToolUseContext:
     read_only: bool = True
     repo_root: str | None = None
     permission_mode: str | None = None
+    read_files: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

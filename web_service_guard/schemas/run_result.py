@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 from typing import Literal
 
 from schemas.agent_messages import MessageLike, ToolCall
@@ -16,6 +17,8 @@ class ToolExecutionRecord:
     arguments: dict[str, object]
     status: Literal["completed", "failed"]
     output: str | None = None
+    structured_output: dict[str, Any] | None = None
+    summary: str | None = None
     error: str | None = None
 
 

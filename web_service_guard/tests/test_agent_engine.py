@@ -65,6 +65,57 @@ def test_run_agent_completes_after_tool_then_final() -> None:
     assert result.finished_at
 
 
+def test_run_agent_preserves_structured_tool_output() -> None:
+    class StructuredTool(BaseTool):
+        name = "bash"
+        description = "bash"
+        input_schema = {}
+
+        def execute(self, **kwargs) -> str:
+            raise AssertionError("execute should not be called when structured execution is available")
+
+        def execute_structured(self, **kwargs) -> dict[str, object]:
+            return {
+                "status": "completed",
+                "summary": "Command completed successfully: pwd",
+                "output": {
+                    "command": "pwd",
+                    "exit_code": 0,
+                    "stdout": "/tmp\n",
+                    "stderr": "",
+                    "combined_output": "/tmp",
+                    "duration_sec": 0.01,
+                },
+                "errors": [],
+            }
+
+        def format_structured_result(self, result: dict[str, object]) -> str:
+            output = result["output"]
+            return f"Command: {output['command']}\nExit code: {output['exit_code']}"
+
+    result = run_agent(
+        llm_adapter=StubLLMAdapter(
+            [
+                AgentTurn(
+                    kind="tool",
+                    content="Run tool",
+                    tool_call=ToolCall(name="bash", arguments={"command": "pwd"}),
+                ),
+                AgentTurn(kind="final", content="Done"),
+            ]
+        ),
+        tools=[StructuredTool()],
+        agent_type="verify",
+        system_prompt="prompt",
+        user_prompt="user",
+    )
+
+    assert result.tool_results[0].status == "completed"
+    assert result.tool_results[0].output.startswith("Command: pwd")
+    assert result.tool_results[0].structured_output is not None
+    assert result.tool_results[0].structured_output["exit_code"] == 0
+
+
 def test_run_agent_fails_on_missing_tool() -> None:
     result = run_agent(
         llm_adapter=StubLLMAdapter(

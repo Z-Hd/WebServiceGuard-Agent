@@ -15,6 +15,7 @@ from tools.base import BaseTool, ToolRegistry
 
 WRITE_TOOL_NAMES = {
     "edit_code",
+    "edit",
     "git_commit",
     "feishu_notify",
     "agent",

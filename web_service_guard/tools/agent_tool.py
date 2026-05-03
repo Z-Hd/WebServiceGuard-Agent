@@ -12,6 +12,8 @@ from errors import (
     ORCH_AGENT_MAX_TURNS_REACHED,
     ORCH_AGENT_TOOL_EXECUTION_ERROR,
     ORCH_AGENT_TOOL_NOT_FOUND,
+    TOOL_BASH_COMMAND_REJECTED,
+    TOOL_BASH_TIMEOUT,
     TOOL_READ_CODE_FAILED,
     TOOL_READ_LOG_FAILED,
     TOOL_RUN_TEST_FAILED,
@@ -252,7 +254,7 @@ class AgentTool(BaseTool):
     def _extract_candidate_files(self, result: AgentRunResult) -> list[str]:
         files: list[str] = []
         for record in result.tool_calls:
-            path = record.arguments.get("path")
+            path = record.arguments.get("path") or record.arguments.get("file_path")
             if isinstance(path, str) and path not in files:
                 files.append(path)
         return files
@@ -260,7 +262,7 @@ class AgentTool(BaseTool):
     def _extract_related_tests(self, result: AgentRunResult) -> list[str]:
         tests: list[str] = []
         for record in result.tool_calls:
-            path = record.arguments.get("path")
+            path = record.arguments.get("path") or record.arguments.get("file_path")
             if isinstance(path, str) and "test" in path.lower() and path not in tests:
                 tests.append(path)
         return tests
@@ -286,20 +288,65 @@ class AgentTool(BaseTool):
     def _build_verification_result(self, result: AgentRunResult) -> dict[str, Any]:
         failed_tests = [record.name for record in result.tool_results if record.status == "failed"]
         failure_logs = [record.error or "" for record in result.tool_results if record.status == "failed"]
-        verdict = self._infer_verification_verdict(result.summary)
-        if verdict == "PASS" and failed_tests:
-            verdict = "FAIL"
-        targeted_tests_passed = verdict == "PASS"
-        smoke_tests_passed = verdict == "PASS"
-        ready_for_pr = verdict == "PASS"
+        bash_records = [record for record in result.tool_results if record.name == "bash"]
+        bash_checks = self._build_bash_checks(bash_records)
+        failure_logs.extend(
+            check["combined_output"]
+            for check in bash_checks
+            if check["status"] == "failed" and check["combined_output"]
+        )
+
+        verdict = self._infer_verification_verdict_from_tools(result.summary, bash_checks, failed_tests)
+        targeted_tests_passed = bool(bash_checks) and all(check["status"] == "completed" for check in bash_checks)
+        smoke_tests_passed = targeted_tests_passed
+        if not bash_checks:
+            targeted_tests_passed = verdict == "PASS"
+            smoke_tests_passed = verdict == "PASS"
+        ready_for_pr = verdict == "PASS" and targeted_tests_passed and smoke_tests_passed
         return {
             "verdict": verdict,
             "targeted_tests_passed": targeted_tests_passed,
             "smoke_tests_passed": smoke_tests_passed,
             "failed_tests": failed_tests,
             "failure_logs": failure_logs,
+            "bash_checks": bash_checks,
             "ready_for_pr": ready_for_pr,
         }
+
+    def _build_bash_checks(self, bash_records: list[Any]) -> list[dict[str, Any]]:
+        checks: list[dict[str, Any]] = []
+        for record in bash_records:
+            payload = record.structured_output or {}
+            checks.append(
+                {
+                    "command": payload.get("command"),
+                    "exit_code": payload.get("exit_code"),
+                    "status": record.status,
+                    "stdout": payload.get("stdout", ""),
+                    "stderr": payload.get("stderr", ""),
+                    "combined_output": payload.get("combined_output", ""),
+                    "duration_sec": payload.get("duration_sec"),
+                }
+            )
+        return checks
+
+    def _infer_verification_verdict_from_tools(
+        self,
+        summary: str,
+        bash_checks: list[dict[str, Any]],
+        failed_tests: list[str],
+    ) -> str:
+        if bash_checks:
+            if any(check["status"] == "failed" or check["exit_code"] not in {0, None} for check in bash_checks):
+                return "FAIL"
+            if failed_tests:
+                return "FAIL"
+            return "PASS"
+
+        verdict = self._infer_verification_verdict(summary)
+        if verdict == "PASS" and failed_tests:
+            return "FAIL"
+        return verdict
 
     def _infer_verification_verdict(self, summary: str) -> str:
         match = re.search(r"VERDICT:\s*(PASS|FAIL|PARTIAL)", summary.upper())
@@ -322,6 +369,7 @@ class AgentTool(BaseTool):
 
     def _tool_error_code(self, tool_name: str) -> str:
         mapping = {
+            "bash": TOOL_BASH_COMMAND_REJECTED,
             "read_code": TOOL_READ_CODE_FAILED,
             "read_log": TOOL_READ_LOG_FAILED,
             "run_test": TOOL_RUN_TEST_FAILED,

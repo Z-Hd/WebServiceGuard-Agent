@@ -27,7 +27,7 @@ BUILTIN_AGENTS: Dict[str, AgentDefinition] = {
             "通过阅读相关代码，找出导致报错的具体文件、行数和逻辑漏洞。\n"
             "注意：你处于只读沙箱中，如果找不到请直说，不要尝试修改任何代码。"
         ),
-        tools=["read_code", "read_log"],
+        tools=["read", "grep", "glob"],
         permission_mode="plan",
         read_only=True,
     ),
@@ -39,7 +39,7 @@ BUILTIN_AGENTS: Dict[str, AgentDefinition] = {
             "你是顶级系统架构师。结合探索员之前收集到的线索和根因，"
             "规划出精准的、最简化的代码修改方案。请以清晰清晰的步骤输出修改计划指令。"
         ),
-        tools=["read_code"],
+        tools=["read", "grep", "glob"],
         permission_mode="plan",
         read_only=True,
     ),
@@ -52,7 +52,7 @@ BUILTIN_AGENTS: Dict[str, AgentDefinition] = {
             "接收到由上级架构师下发的修改计划后，直接使用工具予以落地实施。\n"
             "禁止无理由的代码大重构，严格且仅修改计划里涉及的逻辑漏洞点。"
         ),
-        tools=["edit_code", "read_code"],
+        tools=["edit", "read"],
         permission_mode="acceptEdits",
         read_only=False,
     ),
@@ -65,7 +65,7 @@ BUILTIN_AGENTS: Dict[str, AgentDefinition] = {
             "你必须运行必要的测试脚本并读取其成功/失败日志，根据证据给出通过或失败结论报告。\n"
             "如果在你的验证环节出错，你的结论将被用于继续修正代码。"
         ),
-        tools=["run_test", "read_log"],
+        tools=["read", "grep", "glob", "bash"],
         permission_mode="plan",
         read_only=True,
     ),

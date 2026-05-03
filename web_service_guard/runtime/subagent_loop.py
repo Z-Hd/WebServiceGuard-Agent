@@ -122,7 +122,7 @@ def run_subagent_loop(
                 return _to_result(state)
 
             try:
-                tool_output = tool.execute(**turn.tool_call.arguments)
+                tool_output, structured_result = _execute_tool(tool, turn.tool_call.arguments)
             except Exception as exc:  # pragma: no cover - defensive guard
                 error = f"Tool {turn.tool_call.name} execution failed: {exc}"
                 state.tool_results.append(
@@ -143,13 +143,18 @@ def run_subagent_loop(
                 )
                 continue
 
+            status = str(structured_result.get("status", "completed"))
+            summary = str(structured_result.get("summary", "")) or None
             state.used_tools.append(turn.tool_call.name)
             state.tool_results.append(
                 ToolExecutionRecord(
                     name=turn.tool_call.name,
                     arguments=turn.tool_call.arguments,
-                    status="completed",
+                    status=status,
                     output=tool_output,
+                    structured_output=structured_result.get("output"),
+                    summary=summary,
+                    error=summary if status == "failed" else None,
                 )
             )
             state.messages.append(
@@ -157,7 +162,7 @@ def run_subagent_loop(
                     tool_name=turn.tool_call.name,
                     content=tool_output,
                     arguments=turn.tool_call.arguments,
-                    is_error=False,
+                    is_error=status == "failed",
                 )
             )
             continue
@@ -215,4 +220,31 @@ def _build_tool_result_message(
             "content": content,
             "is_error": is_error,
         },
+    }
+
+
+def _execute_tool(tool: BaseTool, arguments: dict[str, object]) -> tuple[str, dict[str, object]]:
+    execute_structured = getattr(tool, "execute_structured", None)
+    supports_structured = tool.__class__.execute_structured is not BaseTool.execute_structured
+    if callable(execute_structured) and supports_structured:
+        structured_result = execute_structured(**arguments)
+        format_result = getattr(tool, "format_structured_result", None)
+        if callable(format_result):
+            text_output = format_result(structured_result)
+        else:
+            summary = str(structured_result.get("summary", ""))
+            if structured_result.get("status") == "failed":
+                text_output = f"ERROR: {summary}" if summary else "ERROR"
+            else:
+                text_output = summary
+        return text_output, structured_result
+
+    text_output = tool.execute(**arguments)
+    status = "failed" if text_output.startswith("ERROR:") else "completed"
+    summary = text_output.removeprefix("ERROR: ").strip() if status == "failed" else text_output
+    return text_output, {
+        "status": status,
+        "summary": summary,
+        "output": None,
+        "errors": [],
     }

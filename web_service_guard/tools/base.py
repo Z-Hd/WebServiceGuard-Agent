@@ -17,6 +17,23 @@ class BaseTool:
         """
         raise NotImplementedError("Subclasses must implement the execute method")
 
+    def execute_structured(self, **kwargs) -> dict[str, Any]:
+        """
+        可选的结构化执行接口。
+        默认未实现，由支持结构化输出的工具自行覆盖。
+        """
+        raise NotImplementedError("Structured execution is not implemented for this tool")
+
+    def format_structured_result(self, result: dict[str, Any]) -> str:
+        """
+        将结构化结果转成提供给 LLM 的文本。
+        默认实现仅返回 summary，并在失败时加 ERROR 前缀。
+        """
+        summary = str(result.get("summary", ""))
+        if result.get("status") == "failed":
+            return f"ERROR: {summary}" if summary else "ERROR"
+        return summary
+
 
 class ToolRegistry:
     """
