@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
 from typing import Any
 
 from agents.registry import get_agent_definition
@@ -24,6 +23,17 @@ from errors import (
     PLAN_UNACTIONABLE_REPAIR_PLAN,
     VERIFY_TARGETED_TEST_FAILED,
     make_error,
+)
+from prompts.orchestrator import (
+    build_orchestrator_guardrail_feedback,
+    build_orchestrator_initial_messages,
+    build_orchestrator_system_prompt,
+)
+from prompts.subagent_briefs import (
+    build_execute_brief,
+    build_explore_brief,
+    build_plan_brief,
+    build_verify_brief,
 )
 from runtime.engine import LLMAdapter
 from runtime.runtime_state import RepairRuntimeState, ToolUseContext
@@ -200,33 +210,13 @@ class RepairOrchestrator:
         }
 
     def _build_system_prompt(self) -> str:
-        return (
-            "You are the second-stage Repair Orchestrator.\n"
-            "You must coordinate the repair workflow by using only the `agent` tool.\n"
-            "You must not directly read code, modify code, or run tests.\n"
-            "You may delegate only to the following sub-agents: explore, plan, execute, verify.\n"
-            "Use structured observations from prior agent runs to decide the next step.\n"
-            "If the workflow is complete, produce a final response that explicitly states either READY_FOR_PR, NEED_HUMAN_REVIEW, or FAILED.\n"
-            "If you emit an invalid action multiple times, the run will terminate.\n"
-            "Do not call execute as the very first step with no prior context."
-        )
+        return build_orchestrator_system_prompt()
 
     def _build_initial_messages(self, task_input: dict[str, Any]) -> list[MessageLike]:
-        user_content = (
-            "Repair task received.\n"
-            f"run_id: {task_input.get('run_id')}\n"
-            f"repo: {task_input.get('repo')}\n"
-            f"branch: {task_input.get('branch')}\n"
-            f"max_iterations: {task_input.get('max_iterations', self._default_max_iterations)}\n"
-            f"bug_event: {json.dumps(task_input.get('bug_event', {}), ensure_ascii=False)}\n"
-            f"traceback: {task_input.get('traceback', '')}\n"
-            "Goal: determine whether this repair can reach READY_FOR_PR or must end in NEED_HUMAN_REVIEW/FAILED.\n"
-            "Use only the agent tool."
+        return build_orchestrator_initial_messages(
+            task_input,
+            default_max_iterations=self._default_max_iterations,
         )
-        return [
-            {"role": "system", "content": self._build_system_prompt()},
-            {"role": "user", "content": user_content},
-        ]
 
     def _validate_main_thread_action(
         self,
@@ -287,14 +277,7 @@ class RepairOrchestrator:
         )
 
     def _build_orchestrator_feedback_message(self, error: dict[str, Any]) -> MessageLike:
-        return {
-            "role": "user",
-            "content": (
-                "Guardrail feedback: "
-                f"{error['message']} "
-                "Correct the action and continue using only the `agent` tool."
-            ),
-        }
+        return build_orchestrator_guardrail_feedback(str(error["message"]))
 
     def _invoke_agent_tool(self, state: RepairRuntimeState, tool_call: ToolCall) -> AgentToolResult:
         payload = self._build_agent_payload(state, tool_call)
@@ -332,32 +315,115 @@ class RepairOrchestrator:
         agent_type: str,
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
-        base = {"user_prompt": str(arguments["user_prompt"])}
+        requested_user_prompt = str(arguments["user_prompt"])
+        orchestrator_context = self._build_orchestrator_context(state)
+        agent_inputs = self._build_agent_inputs(state, agent_type)
+        base = {
+            "user_prompt": self._build_subagent_brief(
+                agent_type,
+                requested_user_prompt,
+                orchestrator_context,
+                agent_inputs,
+            ),
+            "orchestrator_context": orchestrator_context,
+            "agent_inputs": agent_inputs,
+        }
         if agent_type == "explore":
             base.update(
                 {
-                    "traceback": state.traceback or "",
-                    "service": (state.bug_event or {}).get("service", ""),
-                    "repo": state.repo or "",
-                    "branch": state.branch or "",
-                    "entry_request": state.bug_event or {},
+                    "traceback": agent_inputs["traceback"],
+                    "service": agent_inputs["service"],
+                    "repo": agent_inputs["repo"],
+                    "branch": agent_inputs["branch"],
+                    "entry_request": agent_inputs["entry_request"],
                 }
             )
         elif agent_type == "plan":
-            base["repair_context"] = (state.artifacts.get("explore") or {}).get("output", {})
+            base["repair_context"] = agent_inputs["repair_context"]
         elif agent_type == "execute":
-            base["repair_plan"] = ((state.artifacts.get("plan") or {}).get("output", {})).get("repair_plan", {})
+            base["repair_plan"] = agent_inputs["repair_plan"]
         elif agent_type == "verify":
             execute_output = (state.artifacts.get("execute") or {}).get("output", {})
             plan_output = (state.artifacts.get("plan") or {}).get("output", {})
             base.update(
                 {
-                    "modified_files": execute_output.get("patch_result", {}).get("modified_files", []),
-                    "tests_to_run": plan_output.get("tests_to_run", []),
-                    "smoke_tests": [],
+                    "modified_files": agent_inputs["modified_files"],
+                    "tests_to_run": agent_inputs["tests_to_run"],
+                    "smoke_tests": agent_inputs["smoke_tests"],
                 }
             )
         return base
+
+    def _build_orchestrator_context(self, state: RepairRuntimeState) -> dict[str, Any]:
+        transition = None
+        if state.transition is not None:
+            transition = {
+                "reason": state.transition.reason,
+                "source": state.transition.source,
+                "retryable": state.transition.retryable,
+            }
+        last_summary = None
+        if isinstance(state.last_agent_result, AgentToolResult):
+            last_summary = state.last_agent_result.summary
+        return {
+            "run_id": state.run_id,
+            "traceback": state.traceback or "",
+            "bug_event": state.bug_event or {},
+            "repo": state.repo or "",
+            "branch": state.branch or "",
+            "turn_count": state.turn_count,
+            "artifacts": state.artifacts,
+            "last_agent_tool": state.last_agent_tool,
+            "last_agent_result_summary": last_summary,
+            "current_transition": transition,
+            "errors": state.errors,
+        }
+
+    def _build_agent_inputs(self, state: RepairRuntimeState, agent_type: str) -> dict[str, Any]:
+        explore_output = (state.artifacts.get("explore") or {}).get("output", {})
+        plan_output = (state.artifacts.get("plan") or {}).get("output", {})
+        execute_output = (state.artifacts.get("execute") or {}).get("output", {})
+        base_inputs: dict[str, Any] = {}
+        if agent_type == "explore":
+            return {
+                "traceback": state.traceback or "",
+                "service": (state.bug_event or {}).get("service", ""),
+                "repo": state.repo or "",
+                "branch": state.branch or "",
+                "entry_request": state.bug_event or {},
+            }
+        if agent_type == "plan":
+            return {
+                "repair_context": explore_output,
+            }
+        if agent_type == "execute":
+            return {
+                "repair_plan": plan_output.get("repair_plan", {}),
+            }
+        if agent_type == "verify":
+            return {
+                "modified_files": execute_output.get("patch_result", {}).get("modified_files", []),
+                "tests_to_run": plan_output.get("tests_to_run", []),
+                "smoke_tests": [],
+            }
+        return base_inputs
+
+    def _build_subagent_brief(
+        self,
+        agent_type: str,
+        requested_user_prompt: str,
+        orchestrator_context: dict[str, Any],
+        agent_inputs: dict[str, Any],
+    ) -> str:
+        if agent_type == "explore":
+            return build_explore_brief(requested_user_prompt, orchestrator_context, agent_inputs)
+        if agent_type == "plan":
+            return build_plan_brief(requested_user_prompt, orchestrator_context, agent_inputs)
+        if agent_type == "execute":
+            return build_execute_brief(requested_user_prompt, orchestrator_context, agent_inputs)
+        if agent_type == "verify":
+            return build_verify_brief(requested_user_prompt, orchestrator_context, agent_inputs)
+        return requested_user_prompt
 
     def _record_agent_observation(self, state: RepairRuntimeState, result: AgentToolResult) -> None:
         state.record_agent_result(
