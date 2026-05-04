@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from errors import EXECUTE_PATCH_APPLY_FAILED, TOOL_EDIT_CODE_FAILED, make_error
-from runtime.runtime_state import ToolUseContext
+from runtime.runtime_state import ToolUseContext, normalize_tool_file_path
 from tools.base import BaseTool
 from tools.EditCodeTool.prompt import DESCRIPTION, EDIT_CODE_TOOL_NAME, USAGE_NOTES
 
@@ -149,6 +149,17 @@ class EditCodeTool(BaseTool):
         lines_removed = sum(1 for line in diff_lines if line.startswith("-") and not line.startswith("---"))
         diff_summary = diff_lines[:20]
 
+        if tool_use_context is not None:
+            try:
+                tool_use_context.read_files[normalize_tool_file_path(file_path)] = {
+                    "content": updated_text,
+                    "mtime_ns": path.stat().st_mtime_ns,
+                    "offset": None,
+                    "limit": None,
+                }
+            except OSError:
+                pass
+
         return {
             "status": "completed",
             "summary": f"Applied edit to {file_path}",
@@ -225,7 +236,7 @@ class EditCodeTool(BaseTool):
                 message="File must be read before editing.",
             )
 
-        read_entry = tool_use_context.read_files.get(str(path))
+        read_entry = tool_use_context.read_files.get(normalize_tool_file_path(str(path)))
         if read_entry is None:
             return self._build_error(
                 code=TOOL_EDIT_CODE_FAILED,

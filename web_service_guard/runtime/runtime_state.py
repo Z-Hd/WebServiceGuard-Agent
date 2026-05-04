@@ -19,12 +19,20 @@ workflow routing.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from schemas.agent_messages import MessageLike
 
 ErrorLike = dict[str, Any]
 AgentResultLike = Any
+ReadFileState = dict[str, Any]
+
+
+def normalize_tool_file_path(file_path: str) -> str:
+    """Normalize a file path for stable read/edit state lookups."""
+
+    return str(Path(file_path).resolve())
 
 
 @dataclass(slots=True)
@@ -39,7 +47,7 @@ class ToolUseContext:
     read_only: bool = True
     repo_root: str | None = None
     permission_mode: str | None = None
-    read_files: dict[str, dict[str, Any]] = field(default_factory=dict)
+    read_files: dict[str, ReadFileState] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -84,6 +92,7 @@ class RepairRuntimeState:
     # Latest execution data
     last_agent_tool: str | None = None
     last_agent_result: AgentResultLike | None = None
+    post_verify_finalization_pending: bool = False
 
     # Final outcome
     final_status: str | None = None

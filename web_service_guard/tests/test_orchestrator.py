@@ -41,9 +41,10 @@ class FakeAgentTool(BaseTool):
         "type": "object",
         "properties": {
             "agent_type": {"type": "string"},
-            "user_prompt": {"type": "string"},
+            "description": {"type": "string"},
+            "prompt": {"type": "string"},
         },
-        "required": ["agent_type", "user_prompt"],
+        "required": ["agent_type", "description", "prompt"],
     }
 
     def __init__(self, scripted_results: dict[str, list[AgentToolResult]]) -> None:
@@ -176,22 +177,22 @@ def test_orchestrator_runs_main_thread_agent_loop_to_ready_for_pr() -> None:
             AgentTurn(
                 kind="tool",
                 content="First inspect the codebase",
-                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "user_prompt": "Investigate traceback"}),
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "description": "Traceback review", "prompt": "Investigate traceback"}),
             ),
             AgentTurn(
                 kind="tool",
                 content="Now generate a plan",
-                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "user_prompt": "Create a minimal fix plan"}),
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "description": "Fix planning", "prompt": "Create a minimal fix plan"}),
             ),
             AgentTurn(
                 kind="tool",
                 content="Execute the plan",
-                tool_call=ToolCall(name="agent", arguments={"agent_type": "execute", "user_prompt": "Apply the planned fix"}),
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "execute", "description": "Apply patch", "prompt": "Apply the planned fix"}),
             ),
             AgentTurn(
                 kind="tool",
                 content="Verify the patch",
-                tool_call=ToolCall(name="agent", arguments={"agent_type": "verify", "user_prompt": "Verify and return PASS if successful"}),
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "verify", "description": "Verify patch", "prompt": "Verify and return PASS if successful"}),
             ),
             AgentTurn(kind="final", content="READY_FOR_PR: verification passed"),
         ]
@@ -252,7 +253,7 @@ def test_orchestrator_verify_fail_verdict_ends_in_human_review() -> None:
             AgentTurn(
                 kind="tool",
                 content="Verify the patch",
-                tool_call=ToolCall(name="agent", arguments={"agent_type": "verify", "user_prompt": "Verify and return FAIL if unsuccessful"}),
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "verify", "description": "Verify patch", "prompt": "Verify and return FAIL if unsuccessful"}),
             ),
             AgentTurn(kind="final", content="READY_FOR_PR: ignore this text because structured FAIL should win"),
         ]
@@ -290,7 +291,7 @@ def test_orchestrator_verify_partial_verdict_ends_in_human_review() -> None:
             AgentTurn(
                 kind="tool",
                 content="Verify the patch",
-                tool_call=ToolCall(name="agent", arguments={"agent_type": "verify", "user_prompt": "Verify and return PARTIAL if incomplete"}),
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "verify", "description": "Verify patch", "prompt": "Verify and return PARTIAL if incomplete"}),
             ),
             AgentTurn(kind="final", content="READY_FOR_PR: ignore this text because structured PARTIAL should win"),
         ]
@@ -327,7 +328,7 @@ def test_orchestrator_missing_verification_result_defaults_to_human_review() -> 
             AgentTurn(
                 kind="tool",
                 content="Verify the patch",
-                tool_call=ToolCall(name="agent", arguments={"agent_type": "verify", "user_prompt": "Verify the patch"}),
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "verify", "description": "Verify patch", "prompt": "Verify the patch"}),
             ),
             AgentTurn(kind="final", content="looks probably fine"),
         ]
@@ -355,7 +356,7 @@ def test_orchestrator_writes_formal_tool_result_observations() -> None:
             AgentTurn(
                 kind="tool",
                 content="Inspect first",
-                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "user_prompt": "Investigate traceback"}),
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "description": "Traceback review", "prompt": "Investigate traceback"}),
             ),
             AgentTurn(kind="final", content="NEED_HUMAN_REVIEW"),
         ]
@@ -376,25 +377,23 @@ def test_orchestrator_writes_formal_tool_result_observations() -> None:
     assert len(fake_agent_tool.calls) == 1
     assert fake_agent_tool.calls[0]["run_id"] == "run-001"
     assert fake_agent_tool.calls[0]["iteration"] == 1
-    assert "Investigate traceback" in fake_agent_tool.calls[0]["input"]["user_prompt"]
-    assert fake_agent_tool.calls[0]["input"]["orchestrator_context"]["traceback"] == "Traceback (most recent call last): ..."
-    assert fake_agent_tool.calls[0]["input"]["agent_inputs"]["traceback"] == "Traceback (most recent call last): ..."
-    assert fake_agent_tool.calls[0]["input"]["traceback"] == "Traceback (most recent call last): ..."
+    assert fake_agent_tool.calls[0]["input"]["description"] == "Traceback review"
+    assert fake_agent_tool.calls[0]["input"]["prompt"] == "Investigate traceback"
     assert result["artifacts"]["explore"]["output"]["repair_context"]["bug_summary"] == "Located bug in app.py"
 
 
-def test_orchestrator_plan_payload_uses_global_context_not_only_explore_output() -> None:
+def test_orchestrator_payload_preserves_main_thread_description_and_prompt() -> None:
     main_adapter = StubMainLLMAdapter(
         [
             AgentTurn(
                 kind="tool",
                 content="Explore first",
-                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "user_prompt": "Investigate traceback"}),
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "description": "Traceback review", "prompt": "Investigate traceback"}),
             ),
             AgentTurn(
                 kind="tool",
                 content="Now plan",
-                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "user_prompt": "Create a repair plan from the current evidence"}),
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "description": "Plan repair", "prompt": "Create a repair plan from the current evidence"}),
             ),
             AgentTurn(kind="final", content="NEED_HUMAN_REVIEW"),
         ]
@@ -422,24 +421,22 @@ def test_orchestrator_plan_payload_uses_global_context_not_only_explore_output()
 
     plan_call = fake_agent_tool.calls[1]
     assert plan_call["agent_tool"] == "plan"
-    assert plan_call["input"]["repair_context"] == make_explore_output()
-    assert plan_call["input"]["orchestrator_context"]["artifacts"]["explore"]["summary"] == "Located bug in app.py"
-    assert "Create a repair plan from the current evidence" in plan_call["input"]["user_prompt"]
-    assert "Located bug in app.py" in plan_call["input"]["user_prompt"]
+    assert plan_call["input"]["description"] == "Plan repair"
+    assert plan_call["input"]["prompt"] == "Create a repair plan from the current evidence"
 
 
-def test_orchestrator_verify_to_plan_reuses_verify_findings_in_briefing() -> None:
+def test_orchestrator_verify_to_plan_relies_on_main_thread_prompt_not_runtime_injection() -> None:
     main_adapter = StubMainLLMAdapter(
         [
             AgentTurn(
                 kind="tool",
                 content="Verify current state",
-                tool_call=ToolCall(name="agent", arguments={"agent_type": "verify", "user_prompt": "Re-check the patch and report failures"}),
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "verify", "description": "Recheck patch", "prompt": "Re-check the patch and report failures"}),
             ),
             AgentTurn(
                 kind="tool",
                 content="Revise the plan",
-                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "user_prompt": "Revise the repair plan using the latest failures"}),
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "description": "Revise plan", "prompt": "Revise the repair plan using the latest failures"}),
             ),
             AgentTurn(kind="final", content="NEED_HUMAN_REVIEW"),
         ]
@@ -475,23 +472,22 @@ def test_orchestrator_verify_to_plan_reuses_verify_findings_in_briefing() -> Non
     run(make_task_input(), llm_adapter=main_adapter, agent_tool=fake_agent_tool)
 
     plan_call = fake_agent_tool.calls[1]
-    assert plan_call["input"]["orchestrator_context"]["artifacts"]["verify"]["summary"] == "VERDICT: FAIL"
-    assert "VERDICT: FAIL" in plan_call["input"]["user_prompt"]
-    assert "failed_tests=test_bug_fix" in plan_call["input"]["user_prompt"]
+    assert plan_call["input"]["description"] == "Revise plan"
+    assert plan_call["input"]["prompt"] == "Revise the repair plan using the latest failures"
 
 
-def test_orchestrator_plan_to_explore_reuses_plan_uncertainty_in_briefing() -> None:
+def test_orchestrator_plan_to_explore_relies_on_main_thread_prompt_not_runtime_injection() -> None:
     main_adapter = StubMainLLMAdapter(
         [
             AgentTurn(
                 kind="tool",
                 content="Plan first from partial evidence",
-                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "user_prompt": "Draft a repair plan from current evidence"}),
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "description": "Draft plan", "prompt": "Draft a repair plan from current evidence"}),
             ),
             AgentTurn(
                 kind="tool",
                 content="Explore unresolved details",
-                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "user_prompt": "Investigate the unresolved uncertainty from planning"}),
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "description": "Resolve uncertainty", "prompt": "Investigate the unresolved uncertainty from planning"}),
             ),
             AgentTurn(kind="final", content="NEED_HUMAN_REVIEW"),
         ]
@@ -533,9 +529,8 @@ def test_orchestrator_plan_to_explore_reuses_plan_uncertainty_in_briefing() -> N
     run(make_task_input(), llm_adapter=main_adapter, agent_tool=fake_agent_tool)
 
     explore_call = fake_agent_tool.calls[1]
-    assert explore_call["input"]["orchestrator_context"]["artifacts"]["plan"]["summary"] == "Planning found unresolved ambiguity"
-    assert "Planning found unresolved ambiguity" in explore_call["input"]["user_prompt"]
-    assert "Investigate the unresolved uncertainty from planning" in explore_call["input"]["user_prompt"]
+    assert explore_call["input"]["description"] == "Resolve uncertainty"
+    assert explore_call["input"]["prompt"] == "Investigate the unresolved uncertainty from planning"
 
 
 def test_orchestrator_escalates_when_explore_context_is_insufficient() -> None:
@@ -544,7 +539,7 @@ def test_orchestrator_escalates_when_explore_context_is_insufficient() -> None:
             AgentTurn(
                 kind="tool",
                 content="Investigate first",
-                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "user_prompt": "Investigate traceback"}),
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "description": "Traceback review", "prompt": "Investigate traceback"}),
             ),
         ]
     )
@@ -591,7 +586,7 @@ def test_orchestrator_escalates_when_plan_requests_human_review() -> None:
             AgentTurn(
                 kind="tool",
                 content="Now generate a plan",
-                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "user_prompt": "Create a minimal fix plan"}),
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "description": "Fix planning", "prompt": "Create a minimal fix plan"}),
             ),
         ]
     )
@@ -632,12 +627,12 @@ def test_orchestrator_escalates_when_execute_needs_replan() -> None:
             AgentTurn(
                 kind="tool",
                 content="Explore first",
-                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "user_prompt": "Investigate traceback"}),
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "description": "Traceback review", "prompt": "Investigate traceback"}),
             ),
             AgentTurn(
                 kind="tool",
                 content="Execute the plan",
-                tool_call=ToolCall(name="agent", arguments={"agent_type": "execute", "user_prompt": "Apply the planned fix"}),
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "execute", "description": "Apply patch", "prompt": "Apply the planned fix"}),
             ),
         ]
     )
@@ -676,7 +671,7 @@ def test_orchestrator_rejects_execute_as_first_action() -> None:
             AgentTurn(
                 kind="tool",
                 content="Jump straight to execute",
-                tool_call=ToolCall(name="agent", arguments={"agent_type": "execute", "user_prompt": "Patch immediately"}),
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "execute", "description": "Immediate patch", "prompt": "Patch immediately"}),
             ),
             AgentTurn(kind="final", content="NEED_HUMAN_REVIEW"),
         ]
@@ -695,27 +690,27 @@ def test_orchestrator_verify_fail_after_first_iteration_ends_in_human_review() -
             AgentTurn(
                 kind="tool",
                 content="Explore again",
-                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "user_prompt": "Investigate traceback"}),
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "description": "Traceback review", "prompt": "Investigate traceback"}),
             ),
             AgentTurn(
                 kind="tool",
                 content="Plan again",
-                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "user_prompt": "Create a minimal fix plan"}),
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "description": "Fix planning", "prompt": "Create a minimal fix plan"}),
             ),
             AgentTurn(
                 kind="tool",
                 content="Execute again",
-                tool_call=ToolCall(name="agent", arguments={"agent_type": "execute", "user_prompt": "Apply the planned fix"}),
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "execute", "description": "Apply patch", "prompt": "Apply the planned fix"}),
             ),
             AgentTurn(
                 kind="tool",
                 content="Verify and still fail",
-                tool_call=ToolCall(name="agent", arguments={"agent_type": "verify", "user_prompt": "Verify and return FAIL if unsuccessful"}),
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "verify", "description": "Verify patch", "prompt": "Verify and return FAIL if unsuccessful"}),
             ),
             AgentTurn(
                 kind="tool",
                 content="Retry from planning",
-                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "user_prompt": "Revise the fix plan"}),
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "description": "Revise plan", "prompt": "Revise the fix plan"}),
             ),
         ]
     )

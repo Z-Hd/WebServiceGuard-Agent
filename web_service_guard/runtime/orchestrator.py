@@ -29,12 +29,6 @@ from prompts.orchestrator import (
     build_orchestrator_initial_messages,
     build_orchestrator_system_prompt,
 )
-from prompts.subagent_briefs import (
-    build_execute_brief,
-    build_explore_brief,
-    build_plan_brief,
-    build_verify_brief,
-)
 from runtime.engine import LLMAdapter
 from runtime.runtime_state import RepairRuntimeState, ToolUseContext
 from schemas.agent_messages import AgentTurn, MessageLike, ToolCall
@@ -78,22 +72,27 @@ class RepairOrchestrator:
         max_main_turns = max(state.max_turns * 6, 6)
 
         while not state.done:
+            finalization_only_turn = False
             if self._repair_iterations_used(state) >= state.max_turns and "verify" in state.artifacts:
-                state.record_error(
-                    make_error(
-                        code=ORCH_MAX_ITERATIONS_EXCEEDED,
-                        message="The orchestrator reached the maximum number of repair iterations.",
-                        retryable=False,
-                        stage=state.current_stage or "ORCHESTRATOR",
-                        source="RepairOrchestrator",
+                if state.post_verify_finalization_pending:
+                    finalization_only_turn = True
+                    state.post_verify_finalization_pending = False
+                else:
+                    state.record_error(
+                        make_error(
+                            code=ORCH_MAX_ITERATIONS_EXCEEDED,
+                            message="The orchestrator reached the maximum number of repair iterations.",
+                            retryable=False,
+                            stage=state.current_stage or "ORCHESTRATOR",
+                            source="RepairOrchestrator",
+                        )
                     )
-                )
-                state.mark_done(
-                    final_status="NEED_HUMAN_REVIEW",
-                    exit_reason="max_iterations_reached",
-                    need_human_review=True,
-                )
-                break
+                    state.mark_done(
+                        final_status="NEED_HUMAN_REVIEW",
+                        exit_reason="max_iterations_reached",
+                        need_human_review=True,
+                    )
+                    break
 
             if state.turn_count >= max_main_turns:
                 state.record_error(
@@ -115,7 +114,7 @@ class RepairOrchestrator:
             state.increment_turn()
             turn = self._llm_adapter.complete(
                 messages=state.messages,
-                tools=[self._agent_tool],
+                tools=[] if finalization_only_turn else [self._agent_tool],
                 system_prompt=self._build_system_prompt(),
                 tool_use_context=state.tool_use_context,
             )
@@ -126,6 +125,22 @@ class RepairOrchestrator:
                 break
 
             if turn.kind == "tool" and turn.tool_call:
+                if finalization_only_turn:
+                    state.record_error(
+                        make_error(
+                            code=ORCH_MAX_ITERATIONS_EXCEEDED,
+                            message="The orchestrator must finalize after the last verification instead of dispatching another agent.",
+                            retryable=False,
+                            stage=state.current_stage or "ORCHESTRATOR",
+                            source="RepairOrchestrator",
+                        )
+                    )
+                    state.mark_done(
+                        final_status="NEED_HUMAN_REVIEW",
+                        exit_reason="max_iterations_reached",
+                        need_human_review=True,
+                    )
+                    break
                 state.add_message({"role": "assistant", "content": turn.content})
                 validation_error = self._validate_main_thread_action(state, turn.tool_call)
                 if validation_error is not None:
@@ -231,17 +246,26 @@ class RepairOrchestrator:
             )
 
         agent_type = tool_call.arguments.get("agent_type")
+        prompt = tool_call.arguments.get("prompt")
         user_prompt = tool_call.arguments.get("user_prompt")
+        description = tool_call.arguments.get("description")
         if not isinstance(agent_type, str) or not agent_type:
             return self._build_guardrail_error(
                 code=ORCH_MISSING_AGENT_TYPE,
                 message="The `agent` tool call must include a non-empty agent_type.",
                 stage=state.current_stage,
             )
-        if not isinstance(user_prompt, str) or not user_prompt:
+        effective_prompt = prompt if isinstance(prompt, str) and prompt else user_prompt
+        if not isinstance(effective_prompt, str) or not effective_prompt:
             return self._build_guardrail_error(
                 code=ORCH_MISSING_USER_PROMPT,
-                message="The `agent` tool call must include a non-empty user_prompt.",
+                message="The `agent` tool call must include a non-empty prompt.",
+                stage=state.current_stage,
+            )
+        if not isinstance(description, str) or not description:
+            return self._build_guardrail_error(
+                code=ORCH_MISSING_USER_PROMPT,
+                message="The `agent` tool call must include a non-empty description.",
                 stage=state.current_stage,
             )
         try:
@@ -315,115 +339,10 @@ class RepairOrchestrator:
         agent_type: str,
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
-        requested_user_prompt = str(arguments["user_prompt"])
-        orchestrator_context = self._build_orchestrator_context(state)
-        agent_inputs = self._build_agent_inputs(state, agent_type)
-        base = {
-            "user_prompt": self._build_subagent_brief(
-                agent_type,
-                requested_user_prompt,
-                orchestrator_context,
-                agent_inputs,
-            ),
-            "orchestrator_context": orchestrator_context,
-            "agent_inputs": agent_inputs,
-        }
-        if agent_type == "explore":
-            base.update(
-                {
-                    "traceback": agent_inputs["traceback"],
-                    "service": agent_inputs["service"],
-                    "repo": agent_inputs["repo"],
-                    "branch": agent_inputs["branch"],
-                    "entry_request": agent_inputs["entry_request"],
-                }
-            )
-        elif agent_type == "plan":
-            base["repair_context"] = agent_inputs["repair_context"]
-        elif agent_type == "execute":
-            base["repair_plan"] = agent_inputs["repair_plan"]
-        elif agent_type == "verify":
-            execute_output = (state.artifacts.get("execute") or {}).get("output", {})
-            plan_output = (state.artifacts.get("plan") or {}).get("output", {})
-            base.update(
-                {
-                    "modified_files": agent_inputs["modified_files"],
-                    "tests_to_run": agent_inputs["tests_to_run"],
-                    "smoke_tests": agent_inputs["smoke_tests"],
-                }
-            )
-        return base
-
-    def _build_orchestrator_context(self, state: RepairRuntimeState) -> dict[str, Any]:
-        transition = None
-        if state.transition is not None:
-            transition = {
-                "reason": state.transition.reason,
-                "source": state.transition.source,
-                "retryable": state.transition.retryable,
-            }
-        last_summary = None
-        if isinstance(state.last_agent_result, AgentToolResult):
-            last_summary = state.last_agent_result.summary
         return {
-            "run_id": state.run_id,
-            "traceback": state.traceback or "",
-            "bug_event": state.bug_event or {},
-            "repo": state.repo or "",
-            "branch": state.branch or "",
-            "turn_count": state.turn_count,
-            "artifacts": state.artifacts,
-            "last_agent_tool": state.last_agent_tool,
-            "last_agent_result_summary": last_summary,
-            "current_transition": transition,
-            "errors": state.errors,
+            "description": str(arguments["description"]),
+            "prompt": str(arguments.get("prompt") or arguments["user_prompt"]),
         }
-
-    def _build_agent_inputs(self, state: RepairRuntimeState, agent_type: str) -> dict[str, Any]:
-        explore_output = (state.artifacts.get("explore") or {}).get("output", {})
-        plan_output = (state.artifacts.get("plan") or {}).get("output", {})
-        execute_output = (state.artifacts.get("execute") or {}).get("output", {})
-        base_inputs: dict[str, Any] = {}
-        if agent_type == "explore":
-            return {
-                "traceback": state.traceback or "",
-                "service": (state.bug_event or {}).get("service", ""),
-                "repo": state.repo or "",
-                "branch": state.branch or "",
-                "entry_request": state.bug_event or {},
-            }
-        if agent_type == "plan":
-            return {
-                "repair_context": explore_output,
-            }
-        if agent_type == "execute":
-            return {
-                "repair_plan": plan_output.get("repair_plan", {}),
-            }
-        if agent_type == "verify":
-            return {
-                "modified_files": execute_output.get("patch_result", {}).get("modified_files", []),
-                "tests_to_run": plan_output.get("tests_to_run", []),
-                "smoke_tests": [],
-            }
-        return base_inputs
-
-    def _build_subagent_brief(
-        self,
-        agent_type: str,
-        requested_user_prompt: str,
-        orchestrator_context: dict[str, Any],
-        agent_inputs: dict[str, Any],
-    ) -> str:
-        if agent_type == "explore":
-            return build_explore_brief(requested_user_prompt, orchestrator_context, agent_inputs)
-        if agent_type == "plan":
-            return build_plan_brief(requested_user_prompt, orchestrator_context, agent_inputs)
-        if agent_type == "execute":
-            return build_execute_brief(requested_user_prompt, orchestrator_context, agent_inputs)
-        if agent_type == "verify":
-            return build_verify_brief(requested_user_prompt, orchestrator_context, agent_inputs)
-        return requested_user_prompt
 
     def _record_agent_observation(self, state: RepairRuntimeState, result: AgentToolResult) -> None:
         state.record_agent_result(
@@ -446,6 +365,9 @@ class RepairOrchestrator:
         }
         if result.agent_type == "verify":
             state.artifacts["_repair_iterations_used"] = self._repair_iterations_used(state) + 1
+            state.post_verify_finalization_pending = True
+        else:
+            state.post_verify_finalization_pending = False
         state.add_message(self._build_agent_tool_result_message(result))
         if result.error:
             state.record_error(

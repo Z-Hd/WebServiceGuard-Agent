@@ -6,12 +6,16 @@ from pathlib import Path
 from typing import Any
 
 from errors import TOOL_READ_CODE_FAILED, make_error
+from runtime.runtime_state import normalize_tool_file_path
 from tools.base import BaseTool
-from tools.FileReadTool.prompt import DESCRIPTION, FILE_READ_TOOL_NAME, USAGE_NOTES
+from tools.FileReadTool.prompt import (
+    DEFAULT_LINES_TO_READ,
+    DESCRIPTION,
+    FILE_READ_TOOL_NAME,
+    MAX_LINES_TO_READ,
+    USAGE_NOTES,
+)
 
-
-DEFAULT_LINE_LIMIT = 200
-MAX_LINE_LIMIT = 2000
 
 BLOCKED_DEVICE_PATHS = {
     "/dev/zero",
@@ -69,7 +73,7 @@ class FileReadTool(BaseTool):
         tool_use_context: Any | None = None,
     ) -> dict[str, Any]:
         normalized_offset = 1 if offset is None else offset
-        normalized_limit = DEFAULT_LINE_LIMIT if limit is None else limit
+        normalized_limit = DEFAULT_LINES_TO_READ if limit is None else limit
 
         validation_error = self._validate_inputs(
             file_path=file_path,
@@ -105,7 +109,7 @@ class FileReadTool(BaseTool):
 
         lines = text.splitlines()
         start_index = normalized_offset - 1
-        end_index = start_index + min(normalized_limit, MAX_LINE_LIMIT)
+        end_index = start_index + min(normalized_limit, MAX_LINES_TO_READ)
         selected_lines = lines[start_index:end_index]
         content = "\n".join(selected_lines)
         truncated = len(lines) > end_index
@@ -118,9 +122,11 @@ class FileReadTool(BaseTool):
         if tool_use_context is not None:
             try:
                 mtime_ns = path.stat().st_mtime_ns
-                tool_use_context.read_files[file_path] = {
+                tool_use_context.read_files[normalize_tool_file_path(file_path)] = {
                     "content": text,
                     "mtime_ns": mtime_ns,
+                    "offset": normalized_offset,
+                    "limit": normalized_limit,
                 }
             except OSError:
                 pass

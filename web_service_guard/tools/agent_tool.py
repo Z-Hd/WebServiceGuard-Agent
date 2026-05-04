@@ -38,11 +38,13 @@ class AgentTool(BaseTool):
         "type": "object",
         "properties": {
             "agent_type": {"type": "string"},
+            "description": {"type": "string"},
+            "prompt": {"type": "string"},
             "user_prompt": {"type": "string"},
             "system_prompt_override": {"type": "string"},
             "max_turns": {"type": "integer"},
         },
-        "required": ["agent_type", "user_prompt"],
+        "required": ["agent_type", "prompt"],
     }
 
     def __init__(
@@ -61,7 +63,9 @@ class AgentTool(BaseTool):
         self,
         *,
         agent_type: str,
-        user_prompt: str,
+        prompt: str | None = None,
+        user_prompt: str | None = None,
+        description: str | None = None,
         run_id: str | None = None,
         iteration: int | None = None,
         system_prompt_override: Optional[str] = None,
@@ -69,6 +73,9 @@ class AgentTool(BaseTool):
         max_turns: Optional[int] = None,
         initial_messages: Optional[List[Dict[str, Any]]] = None,
     ) -> AgentToolResult:
+        effective_prompt = prompt or user_prompt
+        if not effective_prompt:
+            raise ValueError("AgentTool requires a non-empty prompt.")
         definition = get_agent_definition(agent_type)
         resolved_tools = self._resolve_tools(definition)
         context = self._build_tool_use_context(resolved_tools, tool_use_context)
@@ -78,7 +85,7 @@ class AgentTool(BaseTool):
             tools=resolved_tools.tools,
             agent_type=definition.agent_type,
             system_prompt=system_prompt_override or definition.system_prompt,
-            user_prompt=user_prompt,
+            user_prompt=effective_prompt,
             tool_use_context=context,
             max_turns=max_turns or definition.max_turns or self._default_max_turns,
             initial_messages=initial_messages,
@@ -119,12 +126,18 @@ class AgentTool(BaseTool):
         iteration: int | None,
     ) -> AgentToolResult:
         audit_record = record_agent_run(result)
+        output = self._build_protocol_output(result, resolved_tools)
+        summary = result.summary
+        if (result.agent_type or "") == "verify":
+            verdict = (output.get("verification_result") or {}).get("verdict")
+            if isinstance(verdict, str) and verdict in {"PASS", "FAIL", "PARTIAL"}:
+                summary = f"VERDICT: {verdict}"
         return AgentToolResult(
             agent_id=result.agent_id,
             agent_type=result.agent_type or "unknown",
             run_id=run_id,
             iteration=iteration,
-            summary=result.summary,
+            summary=summary,
             status=result.status,
             stop_reason=result.stop_reason,
             turn_count=result.turn_count,
@@ -136,7 +149,7 @@ class AgentTool(BaseTool):
             used_tools=list(result.used_tools),
             started_at=result.started_at,
             finished_at=result.finished_at,
-            output=self._build_protocol_output(result, resolved_tools),
+            output=output,
             artifacts=self._build_artifacts(result),
             errors=self._build_errors(result),
             error=result.error,
@@ -148,7 +161,8 @@ class AgentTool(BaseTool):
 
         return self.execute(
             agent_type=str(payload["agent_tool"]),
-            user_prompt=str(payload["input"]["user_prompt"]),
+            description=str(payload["input"].get("description", "")) or None,
+            prompt=str(payload["input"].get("prompt") or payload["input"].get("user_prompt")),
             run_id=payload.get("run_id"),
             iteration=payload.get("iteration"),
             max_turns=payload.get("constraints", {}).get("max_turns"),
@@ -216,9 +230,11 @@ class AgentTool(BaseTool):
                 "need_replan": need_replan,
             }
         if agent_type == "verify":
-            verification_result = self._build_verification_result(result)
+            verification_report = result.summary
+            verification_result = self._build_verification_result(result, verification_report)
             return {
-                "verification_result": verification_result
+                "verification_result": verification_result,
+                "verification_report": verification_report,
             }
         return {}
 
@@ -288,31 +304,36 @@ class AgentTool(BaseTool):
         evidence = [record.output for record in result.tool_results if record.output]
         return [item for item in evidence if item]
 
-    def _build_verification_result(self, result: AgentRunResult) -> dict[str, Any]:
-        failed_tests = [record.name for record in result.tool_results if record.status == "failed"]
-        failure_logs = [record.error or "" for record in result.tool_results if record.status == "failed"]
+    def _build_verification_result(
+        self,
+        result: AgentRunResult,
+        verification_report: str,
+    ) -> dict[str, Any]:
         bash_records = [record for record in result.tool_results if record.name == "bash"]
         bash_checks = self._build_bash_checks(bash_records)
-        failure_logs.extend(
-            check["combined_output"]
-            for check in bash_checks
-            if check["status"] == "failed" and check["combined_output"]
-        )
-
-        verdict = self._infer_verification_verdict_from_tools(result.summary, bash_checks, failed_tests)
-        targeted_tests_passed = bool(bash_checks) and all(check["status"] == "completed" for check in bash_checks)
-        smoke_tests_passed = targeted_tests_passed
-        if not bash_checks:
-            targeted_tests_passed = verdict == "PASS"
-            smoke_tests_passed = verdict == "PASS"
-        ready_for_pr = verdict == "PASS" and targeted_tests_passed and smoke_tests_passed
+        verification_assessment = self._assess_bash_verification(bash_checks)
+        verdict = self._infer_verification_verdict(verification_report)
+        if verdict == "PASS":
+            targeted_tests_passed = True
+            smoke_tests_passed = True
+            ready_for_pr = True
+        elif verdict == "FAIL":
+            targeted_tests_passed = False
+            smoke_tests_passed = False
+            ready_for_pr = False
+        else:
+            targeted_tests_passed = False
+            smoke_tests_passed = False
+            ready_for_pr = False
         return {
             "verdict": verdict,
             "targeted_tests_passed": targeted_tests_passed,
             "smoke_tests_passed": smoke_tests_passed,
-            "failed_tests": failed_tests,
-            "failure_logs": failure_logs,
+            "failed_tests": verification_assessment["failed_tests"],
+            "failure_logs": verification_assessment["failure_logs"],
             "bash_checks": bash_checks,
+            "environment_limitations": verification_assessment["environment_limitations"],
+            "successful_checks": verification_assessment["successful_checks"],
             "ready_for_pr": ready_for_pr,
         }
 
@@ -320,36 +341,127 @@ class AgentTool(BaseTool):
         checks: list[dict[str, Any]] = []
         for record in bash_records:
             payload = record.structured_output or {}
+            command = payload.get("command")
             checks.append(
                 {
-                    "command": payload.get("command"),
+                    "command": command,
                     "exit_code": payload.get("exit_code"),
                     "status": record.status,
                     "stdout": payload.get("stdout", ""),
                     "stderr": payload.get("stderr", ""),
                     "combined_output": payload.get("combined_output", ""),
                     "duration_sec": payload.get("duration_sec"),
+                    "summary": record.summary or "",
+                    "error": record.error or "",
+                    "is_validation_command": self._is_validation_command(command),
+                    "is_environment_failure": self._is_environment_failure(command, record.error or "", payload),
+                    "is_exploratory_failure": self._is_exploratory_failure(command),
                 }
             )
         return checks
 
-    def _infer_verification_verdict_from_tools(
-        self,
-        summary: str,
-        bash_checks: list[dict[str, Any]],
-        failed_tests: list[str],
-    ) -> str:
-        if bash_checks:
-            if any(check["status"] == "failed" or check["exit_code"] not in {0, None} for check in bash_checks):
-                return "FAIL"
-            if failed_tests:
-                return "FAIL"
-            return "PASS"
+    def _assess_bash_verification(self, bash_checks: list[dict[str, Any]]) -> dict[str, Any]:
+        failed_tests: list[str] = []
+        failure_logs: list[str] = []
+        environment_limitations: list[str] = []
+        successful_checks: list[str] = []
+        validation_successes = 0
+        validation_failures = 0
 
-        verdict = self._infer_verification_verdict(summary)
-        if verdict == "PASS" and failed_tests:
-            return "FAIL"
-        return verdict
+        for check in bash_checks:
+            command = str(check.get("command") or "")
+            status = check.get("status")
+            is_validation = bool(check.get("is_validation_command"))
+            is_environment_failure = bool(check.get("is_environment_failure"))
+            is_exploratory_failure = bool(check.get("is_exploratory_failure"))
+            combined_output = str(check.get("combined_output") or "")
+            error = str(check.get("error") or "")
+            failure_text = combined_output or error or command
+
+            if status == "completed":
+                if is_validation:
+                    validation_successes += 1
+                    successful_checks.append(command)
+                continue
+
+            if is_validation and not is_environment_failure:
+                validation_failures += 1
+                failed_tests.append("bash")
+                if failure_text:
+                    failure_logs.append(failure_text)
+                continue
+
+            if is_environment_failure:
+                if failure_text:
+                    environment_limitations.append(failure_text)
+                continue
+
+            if is_exploratory_failure:
+                if failure_text:
+                    failure_logs.append(failure_text)
+                continue
+
+            failed_tests.append("bash")
+            if failure_text:
+                failure_logs.append(failure_text)
+
+        return {
+            "failed_tests": failed_tests,
+            "failure_logs": failure_logs,
+            "environment_limitations": environment_limitations,
+            "successful_checks": successful_checks,
+            "targeted_tests_passed": validation_successes > 0 and validation_failures == 0,
+            "smoke_tests_passed": validation_successes > 0 and validation_failures == 0,
+            "validation_successes": validation_successes,
+            "validation_failures": validation_failures,
+        }
+
+    def _is_validation_command(self, command: Any) -> bool:
+        if not isinstance(command, str):
+            return False
+        lowered = command.lower().strip()
+        return (
+            "pytest" in lowered
+            or "python -m unittest" in lowered
+            or "python3 -m unittest" in lowered
+            or lowered.startswith("python ")
+            or lowered.startswith("python3 ")
+            or "&& python " in lowered
+            or "&& python3 " in lowered
+        )
+
+    def _is_exploratory_failure(self, command: Any) -> bool:
+        if not isinstance(command, str):
+            return False
+        lowered = command.lower().strip()
+        return lowered.startswith("ls") or lowered.startswith("pwd") or lowered.startswith("cat") or lowered.startswith("head") or lowered.startswith("tail") or lowered.startswith("echo")
+
+    def _is_environment_failure(
+        self,
+        command: Any,
+        error: str,
+        payload: dict[str, Any],
+    ) -> bool:
+        combined = " ".join(
+            part
+            for part in [
+                str(command or ""),
+                error,
+                str(payload.get("stdout") or ""),
+                str(payload.get("stderr") or ""),
+                str(payload.get("combined_output") or ""),
+            ]
+            if part
+        ).lower()
+        markers = (
+            "outside the first-phase allowlist",
+            "no module named pytest",
+            "python: not found",
+            "command timed out",
+            "working directory does not exist",
+            "working directory is not a directory",
+        )
+        return any(marker in combined for marker in markers)
 
     def _infer_verification_verdict(self, summary: str) -> str:
         match = re.search(r"VERDICT:\s*(PASS|FAIL|PARTIAL)", summary.upper())

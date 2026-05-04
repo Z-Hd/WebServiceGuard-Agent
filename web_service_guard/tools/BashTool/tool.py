@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shlex
 import subprocess
 import time
 from typing import Any
@@ -19,22 +20,12 @@ from tools.base import BaseTool
 
 
 DEFAULT_TIMEOUT_SEC = 30
-ALLOWED_PREFIXES = (
-    "pytest",
-    "python -m pytest",
-    "python -m unittest",
-    "python3 -m pytest",
-    "python3 -m unittest",
-    "npm test",
-    "npm run test",
-    "make test",
-    "pwd",
-    "ls",
-    "cat",
-    "head",
-    "tail",
-    "echo",
-)
+READ_ONLY_COMMAND_PREFIXES = ("pwd", "ls", "cat", "head", "tail", "echo")
+PYTHON_BINARIES = {"python", "python3"}
+PYTHON_MODULE_TEST_RUNNERS = {"pytest", "unittest"}
+SIMPLE_TEST_COMMANDS = ("pytest",)
+NODE_TEST_PREFIXES = ("npm test", "npm run test", "make test")
+CD_CHAIN_OPERATOR = "&&"
 DENIED_PREFIXES = (
     "rm",
     "sudo",
@@ -68,6 +59,7 @@ class BashTool(BaseTool):
         command: str,
         working_dir: str | None = None,
         timeout_sec: int | None = None,
+        tool_use_context: Any | None = None,
     ) -> str:
         result = self.execute_structured(
             command=command,
@@ -82,6 +74,7 @@ class BashTool(BaseTool):
         command: str,
         working_dir: str | None = None,
         timeout_sec: int | None = None,
+        tool_use_context: Any | None = None,
     ) -> dict[str, Any]:
         normalized_timeout = DEFAULT_TIMEOUT_SEC if timeout_sec is None else timeout_sec
         normalized_dir = str(Path.cwd() if working_dir is None else Path(working_dir).resolve())
@@ -210,12 +203,71 @@ class BashTool(BaseTool):
                 code=TOOL_BASH_COMMAND_REJECTED,
                 message=f"Command is not allowed: {command}",
             )
-        if not any(lowered.startswith(prefix) for prefix in ALLOWED_PREFIXES):
+        if not self._is_allowed_command(command, workdir_path):
             return self._build_error(
                 code=TOOL_BASH_COMMAND_REJECTED,
                 message=f"Command is outside the first-phase allowlist: {command}",
             )
         return None
+
+    def _is_allowed_command(self, command: str, working_dir: Path) -> bool:
+        command = command.strip()
+        if not command:
+            return False
+
+        if self._contains_denied_segment(command):
+            return False
+
+        if CD_CHAIN_OPERATOR in command:
+            left, right = command.split(CD_CHAIN_OPERATOR, 1)
+            left = left.strip()
+            right = right.strip()
+            if not left.startswith("cd "):
+                return False
+            target_dir = left[3:].strip()
+            if not target_dir:
+                return False
+            resolved_dir = (working_dir / target_dir).resolve() if not Path(target_dir).is_absolute() else Path(target_dir).resolve()
+            if not resolved_dir.exists() or not resolved_dir.is_dir():
+                return False
+            return self._is_allowed_command(right, resolved_dir)
+
+        return self._is_allowed_simple_command(command)
+
+    def _contains_denied_segment(self, command: str) -> bool:
+        segments = [segment.strip() for segment in command.split(CD_CHAIN_OPERATOR)]
+        return any(self._starts_with_denied_prefix(segment) for segment in segments if segment)
+
+    def _starts_with_denied_prefix(self, command: str) -> bool:
+        lowered = command.lower()
+        return any(lowered.startswith(prefix) for prefix in DENIED_PREFIXES)
+
+    def _is_allowed_simple_command(self, command: str) -> bool:
+        lowered = command.lower()
+        if any(lowered.startswith(prefix) for prefix in READ_ONLY_COMMAND_PREFIXES):
+            return True
+        if any(lowered.startswith(prefix) for prefix in NODE_TEST_PREFIXES):
+            return True
+        if any(lowered.startswith(prefix) for prefix in SIMPLE_TEST_COMMANDS):
+            return True
+
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            return False
+        if not parts:
+            return False
+
+        executable = parts[0]
+        if executable in PYTHON_BINARIES:
+            if len(parts) >= 3 and parts[1] == "-m" and parts[2] in PYTHON_MODULE_TEST_RUNNERS:
+                return True
+            if len(parts) >= 3 and parts[1] == "-c":
+                return True
+            if len(parts) >= 2:
+                script = parts[1]
+                return script.endswith(".py")
+        return False
 
     def _build_error(self, *, code: str, message: str) -> dict[str, Any]:
         return {

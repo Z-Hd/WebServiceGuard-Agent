@@ -14,18 +14,24 @@ from prompts.orchestrator import (
 )
 from prompts.agent_tool import build_agent_tool_description
 from agents.registry import BUILTIN_AGENTS
-from prompts.subagent_briefs import (
-    build_execute_brief,
-    build_explore_brief,
-    build_plan_brief,
-    build_verify_brief,
-)
 from prompts.subagents import (
     build_execute_system_prompt,
     build_explore_system_prompt,
     build_plan_system_prompt,
     build_verify_system_prompt,
 )
+from tools.BashTool.prompt import BASH_TOOL_NAME
+from tools.EditCodeTool.prompt import EDIT_CODE_TOOL_NAME, USAGE_NOTES as EDIT_USAGE_NOTES
+from tools.FileReadTool.prompt import (
+    DEFAULT_LINES_TO_READ,
+    FILE_READ_TOOL_NAME,
+    MAX_LINES_TO_READ,
+    OFFSET_INSTRUCTION_DEFAULT,
+    OFFSET_INSTRUCTION_TARGETED,
+    USAGE_NOTES as FILE_READ_USAGE_NOTES,
+)
+from tools.GlobTool.prompt import GLOB_TOOL_NAME, USAGE_NOTES as GLOB_USAGE_NOTES
+from tools.GrepTool.prompt import GREP_TOOL_NAME, USAGE_NOTES as GREP_USAGE_NOTES
 
 
 def test_orchestrator_system_prompt_mentions_agent_only_coordination() -> None:
@@ -64,10 +70,49 @@ def test_orchestrator_guardrail_feedback_is_user_message() -> None:
 
 
 def test_subagent_prompts_are_exposed_from_central_module() -> None:
-    assert "Bug 探索专家" in build_explore_system_prompt()
-    assert "顶级系统架构师" in build_plan_system_prompt()
-    assert "代码修改机器" in build_execute_system_prompt()
-    assert "安全测试门禁" in build_verify_system_prompt()
+    explore_prompt = build_explore_system_prompt()
+    assert "file search and code exploration specialist" in explore_prompt
+    assert "READ-ONLY MODE" in explore_prompt
+    assert "Your strengths:" in explore_prompt
+    assert "Guidelines:" in explore_prompt
+    assert f"`{GLOB_TOOL_NAME}`" in explore_prompt
+    assert f"`{GREP_TOOL_NAME}`" in explore_prompt
+    assert f"`{FILE_READ_TOOL_NAME}`" in explore_prompt
+    assert f"`{BASH_TOOL_NAME}`" in explore_prompt
+    assert "NOTE: You are a fast exploration agent." in explore_prompt
+    assert "A high-quality final answer should prioritize" in explore_prompt
+    plan_prompt = build_plan_system_prompt()
+    assert "software architect and planning specialist" in plan_prompt
+    assert "=== CRITICAL: READ-ONLY MODE - NO FILE MODIFICATIONS ===" in plan_prompt
+    assert "## Your Process" in plan_prompt
+    assert "## Required Output" in plan_prompt
+    assert f"`{FILE_READ_TOOL_NAME}`" in plan_prompt
+    assert f"`{GLOB_TOOL_NAME}`" in plan_prompt
+    assert f"`{GREP_TOOL_NAME}`" in plan_prompt
+    assert f"`{BASH_TOOL_NAME}`" in plan_prompt
+    assert "You can only explore and plan." in plan_prompt
+    execute_prompt = build_execute_system_prompt()
+    assert "precision implementation agent" in execute_prompt
+    assert "=== CRITICAL: MINIMAL, CONTROLLED EDITS ONLY ===" in execute_prompt
+    assert f"`{FILE_READ_TOOL_NAME}`" in execute_prompt
+    assert f"`{EDIT_CODE_TOOL_NAME}`" in execute_prompt
+    assert "Always use" in execute_prompt
+    assert "Perform broad refactors" in execute_prompt
+    assert "Complete the implementation fully when the path is clear" in execute_prompt
+    verify_prompt = build_verify_system_prompt()
+    assert "You are a verification specialist." in verify_prompt
+    assert "=== CRITICAL: DO NOT MODIFY THE PROJECT ===" in verify_prompt
+    assert f"`{BASH_TOOL_NAME}`" in verify_prompt
+    assert f"`{FILE_READ_TOOL_NAME}`" in verify_prompt
+    assert f"`{GREP_TOOL_NAME}`" in verify_prompt
+    assert f"`{GLOB_TOOL_NAME}`" in verify_prompt
+    assert "=== RECOGNIZE YOUR OWN RATIONALIZATIONS ===" in verify_prompt
+    assert "=== OUTPUT FORMAT (REQUIRED) ===" in verify_prompt
+    assert "A successful primary verification command should normally trigger final reporting" in verify_prompt
+    assert "Once those required successful checks are in hand, stop and issue the final report immediately" in verify_prompt
+    assert "VERDICT: PASS" in verify_prompt
+    assert "VERDICT: FAIL" in verify_prompt
+    assert "VERDICT: PARTIAL" in verify_prompt
 
 
 def test_agent_tool_description_explains_agent_selection_workflow() -> None:
@@ -85,42 +130,48 @@ def test_agent_tool_description_explains_agent_selection_workflow() -> None:
     assert "Choose the next agent based on what information is missing right now, not on a fixed sequence." in description
 
 
-def test_subagent_briefs_include_goal_context_and_output_expectations() -> None:
-    context = {
-        "run_id": "run-001",
-        "traceback": "Traceback: boom",
-        "bug_event": {"service": "demo"},
-        "repo": "demo-repo",
-        "branch": "main",
-        "turn_count": 2,
-        "artifacts": {
-            "explore": {
-                "status": "completed",
-                "summary": "Located bug in app.py",
-                "output": {"suspect_files": ["app.py"]},
-            },
-            "verify": {
-                "status": "completed",
-                "summary": "VERDICT: FAIL",
-                "output": {"verification_result": {"verdict": "FAIL", "failed_tests": ["test_bug_fix"]}},
-            },
-        },
-        "last_agent_tool": "verify",
-        "last_agent_result_summary": "VERDICT: FAIL",
-        "current_transition": {"reason": "agent_completed", "source": "verify", "retryable": True},
-        "errors": [{"code": "VERIFY_TARGETED_TEST_FAILED", "message": "Verification reported FAIL."}],
-    }
+def test_grep_tool_prompt_matches_current_runtime_capabilities() -> None:
+    assert f"ALWAYS use `{GREP_TOOL_NAME}` for search tasks." in GREP_USAGE_NOTES
+    assert f"NEVER invoke `grep` or `rg` through `{BASH_TOOL_NAME}`" in GREP_USAGE_NOTES
+    assert "output_mode=`content`" in GREP_USAGE_NOTES
+    assert "output_mode=`files_with_matches`" in GREP_USAGE_NOTES
+    assert "output_mode=`count`" in GREP_USAGE_NOTES
+    assert "use the `agent` tool for open-ended investigations" in GREP_USAGE_NOTES
 
-    explore = build_explore_brief("Find the failing code path", context, {"service": "demo", "entry_request": {"service": "demo"}})
-    plan = build_plan_brief("Revise the plan after failure", context, {"repair_context": {"suspect_files": ["app.py"]}})
-    execute = build_execute_brief("Apply the minimal fix", context, {"repair_plan": {"files_to_modify": ["app.py"]}})
-    verify = build_verify_brief("Re-run validation", context, {"modified_files": ["app.py"], "tests_to_run": ["tests/test_app.py"], "smoke_tests": []})
 
-    for brief in (explore, plan, execute, verify):
-        assert "## Requested task" in brief
-        assert "## Current orchestrator context" in brief
-        assert "## Prior agent results" in brief
-        assert "## Expected output focus" in brief
+def test_glob_tool_prompt_matches_current_runtime_capabilities() -> None:
+    assert f"use `{GLOB_TOOL_NAME}` when you need to find files by name or path pattern" in GLOB_USAGE_NOTES
+    assert "supports glob patterns such as" in GLOB_USAGE_NOTES
+    assert "returns matching file paths only" in GLOB_USAGE_NOTES
+    assert "use the `agent` tool instead" in GLOB_USAGE_NOTES
 
-    assert "If a previous verification attempt failed" in plan
-    assert "Base your verdict on actual command output" in verify
+
+def test_file_read_tool_prompt_matches_current_runtime_capabilities() -> None:
+    assert "Reads a file from the local filesystem." in FILE_READ_USAGE_NOTES
+    assert "The file_path parameter must be an absolute path" in FILE_READ_USAGE_NOTES
+    assert f"By default, it reads up to {DEFAULT_LINES_TO_READ} lines" in FILE_READ_USAGE_NOTES
+    assert OFFSET_INSTRUCTION_DEFAULT in FILE_READ_USAGE_NOTES
+    assert OFFSET_INSTRUCTION_TARGETED in FILE_READ_USAGE_NOTES
+    assert "offset is 1-based and defaults to 1" in FILE_READ_USAGE_NOTES
+    assert f"limit is capped at {MAX_LINES_TO_READ} lines" in FILE_READ_USAGE_NOTES
+    assert f"use a read-only `ls` command via `{BASH_TOOL_NAME}`" in FILE_READ_USAGE_NOTES
+
+
+def test_bash_tool_prompt_matches_current_runtime_capabilities() -> None:
+    from tools.BashTool.prompt import USAGE_NOTES as BASH_USAGE_NOTES
+
+    assert f"use `{BASH_TOOL_NAME}` when you need controlled shell execution" in BASH_USAGE_NOTES
+    assert "avoid using `bash` for file reading, file discovery, or content search" in BASH_USAGE_NOTES
+    assert "commands outside the runtime allowlist will be rejected" in BASH_USAGE_NOTES
+    assert "do not use this tool for file modification, dependency installation, git write operations" in BASH_USAGE_NOTES
+    assert "prefer the `agent` tool instead" in BASH_USAGE_NOTES
+
+
+def test_edit_tool_prompt_matches_current_runtime_capabilities() -> None:
+    assert "Performs exact string replacements in files." in EDIT_USAGE_NOTES
+    assert f"You must use `{FILE_READ_TOOL_NAME}` at least once" in EDIT_USAGE_NOTES
+    assert "file_path must be an absolute path" in EDIT_USAGE_NOTES
+    assert "old_string must match the current file content exactly" in EDIT_USAGE_NOTES
+    assert "the edit will fail if old_string is not unique" in EDIT_USAGE_NOTES
+    assert "use the smallest old_string that is clearly unique" in EDIT_USAGE_NOTES
+    assert "use replace_all=true" in EDIT_USAGE_NOTES

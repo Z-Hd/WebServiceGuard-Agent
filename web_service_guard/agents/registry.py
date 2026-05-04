@@ -58,6 +58,7 @@ BUILTIN_AGENTS: Dict[str, AgentDefinition] = {
         description="负责 QA 验证。通过跑测试判断修改是否成功。",
         system_prompt=build_verify_system_prompt(),
         tools=["read", "grep", "glob", "bash"],
+        max_turns=10,
         permission_mode="plan",
         read_only=True,
     ),

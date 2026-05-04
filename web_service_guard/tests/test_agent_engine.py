@@ -8,8 +8,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from runtime.engine import run_agent
+from runtime.runtime_state import ToolUseContext
 from runtime.subagent_loop import run_subagent_loop
 from schemas.agent_messages import AgentTurn, ToolCall
+from tools.EditCodeTool import EditCodeTool
+from tools.FileReadTool import FileReadTool
 from tools.base import BaseTool
 
 
@@ -256,3 +259,47 @@ def test_run_agent_marks_max_turns_reached() -> None:
 
     assert result.status == "max_turns_reached"
     assert result.stop_reason == "max_turns_reached"
+
+
+def test_run_agent_shares_tool_use_context_between_read_and_edit(tmp_path: Path) -> None:
+    file_path = tmp_path / "sample.txt"
+    file_path.write_text("hello world\n", encoding="utf-8")
+    context = ToolUseContext()
+
+    result = run_agent(
+        llm_adapter=StubLLMAdapter(
+            [
+                AgentTurn(
+                    kind="tool",
+                    content="Read the file first",
+                    tool_call=ToolCall(
+                        name="read",
+                        arguments={"file_path": str(file_path), "offset": 1, "limit": 20},
+                    ),
+                ),
+                AgentTurn(
+                    kind="tool",
+                    content="Apply the edit",
+                    tool_call=ToolCall(
+                        name="edit",
+                        arguments={
+                            "file_path": str(file_path),
+                            "old_string": "world",
+                            "new_string": "agent",
+                        },
+                    ),
+                ),
+                AgentTurn(kind="final", content="Done"),
+            ]
+        ),
+        tools=[FileReadTool(), EditCodeTool()],
+        agent_type="execute",
+        system_prompt="prompt",
+        user_prompt="user",
+        tool_use_context=context,
+    )
+
+    assert result.status == "completed"
+    assert result.tool_results[0].status == "completed"
+    assert result.tool_results[1].status == "completed"
+    assert file_path.read_text(encoding="utf-8") == "hello agent\n"

@@ -297,6 +297,51 @@ def test_edit_code_tool_replaces_unique_match(tmp_path: Path) -> None:
     assert result["output"]["modified_file"] == str(file_path)
 
 
+def test_edit_code_tool_allows_second_edit_after_first_edit_updates_read_state(tmp_path: Path) -> None:
+    file_path = tmp_path / "sample.txt"
+    file_path.write_text("alpha world\nbeta line\n", encoding="utf-8")
+    context = ToolUseContext()
+    FileReadTool()._execute_structured(file_path=str(file_path), tool_use_context=context)
+    tool = EditCodeTool()
+
+    first = tool._execute_structured(
+        file_path=str(file_path),
+        old_string="world",
+        new_string="agent",
+        tool_use_context=context,
+    )
+    assert first["status"] == "completed"
+
+    second = tool._execute_structured(
+        file_path=str(file_path),
+        old_string="beta",
+        new_string="gamma",
+        tool_use_context=context,
+    )
+    assert second["status"] == "completed"
+    assert file_path.read_text(encoding="utf-8") == "alpha agent\ngamma line\n"
+
+
+def test_edit_code_tool_matches_normalized_read_state_keys(tmp_path: Path) -> None:
+    file_path = tmp_path / "sample.txt"
+    file_path.write_text("hello world\n", encoding="utf-8")
+    context = ToolUseContext()
+    canonical = str(file_path.resolve())
+    alias_path = str(tmp_path / "." / "sample.txt")
+
+    FileReadTool()._execute_structured(file_path=alias_path, tool_use_context=context)
+
+    result = EditCodeTool()._execute_structured(
+        file_path=canonical,
+        old_string="world",
+        new_string="agent",
+        tool_use_context=context,
+    )
+
+    assert result["status"] == "completed"
+    assert file_path.read_text(encoding="utf-8") == "hello agent\n"
+
+
 def test_edit_code_tool_rejects_multi_match_without_replace_all(tmp_path: Path) -> None:
     file_path = tmp_path / "sample.txt"
     file_path.write_text("x\nx\n", encoding="utf-8")
@@ -469,6 +514,49 @@ def test_bash_tool_reports_nonzero_exit_code() -> None:
     assert result["output"]["exit_code"] == 1
 
 
+def test_bash_tool_allows_python_test_file_execution(tmp_path: Path) -> None:
+    test_file = tmp_path / "test_sample.py"
+    test_file.write_text(
+        "import unittest\n\n"
+        "class T(unittest.TestCase):\n"
+        "    def test_ok(self):\n"
+        "        self.assertEqual(1, 1)\n\n"
+        "if __name__ == '__main__':\n"
+        "    unittest.main()\n",
+        encoding="utf-8",
+    )
+
+    result = BashTool()._execute_structured(command=f"python3 {test_file}")
+
+    assert result["status"] == "completed"
+    assert result["output"]["exit_code"] == 0
+
+
+def test_bash_tool_allows_python_inline_execution() -> None:
+    result = BashTool()._execute_structured(command='python3 -c "print(123)"')
+
+    assert result["status"] == "completed"
+    assert result["output"]["stdout"].strip() == "123"
+
+
+def test_bash_tool_allows_cd_then_python_execution(tmp_path: Path) -> None:
+    test_file = tmp_path / "test_sample.py"
+    test_file.write_text(
+        "import unittest\n\n"
+        "class T(unittest.TestCase):\n"
+        "    def test_ok(self):\n"
+        "        self.assertEqual(1, 1)\n\n"
+        "if __name__ == '__main__':\n"
+        "    unittest.main()\n",
+        encoding="utf-8",
+    )
+
+    result = BashTool()._execute_structured(command=f"cd {tmp_path} && python3 test_sample.py -v")
+
+    assert result["status"] == "completed"
+    assert result["output"]["exit_code"] == 0
+
+
 def test_bash_tool_rejects_empty_command() -> None:
     tool = BashTool()
     result = tool._execute_structured(command="   ")
@@ -506,6 +594,22 @@ def test_bash_tool_rejects_denied_command() -> None:
 def test_bash_tool_rejects_outside_allowlist_command() -> None:
     tool = BashTool()
     result = tool._execute_structured(command="whoami")
+
+    assert result["status"] == "failed"
+    assert result["errors"][0]["code"] == "TOOL_BASH_COMMAND_REJECTED"
+
+
+def test_bash_tool_rejects_cd_missing_directory_then_python(tmp_path: Path) -> None:
+    result = BashTool()._execute_structured(
+        command=f"cd {tmp_path / 'missing'} && python3 test_sample.py -v"
+    )
+
+    assert result["status"] == "failed"
+    assert "outside the first-phase allowlist" in result["summary"]
+
+
+def test_bash_tool_rejects_python_with_install_command() -> None:
+    result = BashTool()._execute_structured(command="pip install pytest")
 
     assert result["status"] == "failed"
     assert result["errors"][0]["code"] == "TOOL_BASH_COMMAND_REJECTED"

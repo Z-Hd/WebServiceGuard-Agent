@@ -122,7 +122,11 @@ def run_subagent_loop(
                 return _to_result(state)
 
             try:
-                tool_output, structured_result = _execute_tool(tool, turn.tool_call.arguments)
+                tool_output, structured_result = _execute_tool(
+                    tool,
+                    turn.tool_call.arguments,
+                    tool_use_context=tool_use_context,
+                )
             except Exception as exc:  # pragma: no cover - defensive guard
                 error = f"Tool {turn.tool_call.name} execution failed: {exc}"
                 state.tool_results.append(
@@ -223,11 +227,20 @@ def _build_tool_result_message(
     }
 
 
-def _execute_tool(tool: BaseTool, arguments: dict[str, object]) -> tuple[str, dict[str, object]]:
+def _execute_tool(
+    tool: BaseTool,
+    arguments: dict[str, object],
+    *,
+    tool_use_context: ToolUseContext | None = None,
+) -> tuple[str, dict[str, object]]:
+    merged_arguments = dict(arguments)
+    if tool_use_context is not None and "tool_use_context" not in merged_arguments:
+        merged_arguments["tool_use_context"] = tool_use_context
+
     execute_structured = getattr(tool, "execute_structured", None)
     supports_structured = tool.__class__.execute_structured is not BaseTool.execute_structured
     if callable(execute_structured) and supports_structured:
-        structured_result = execute_structured(**arguments)
+        structured_result = execute_structured(**merged_arguments)
         format_result = getattr(tool, "format_structured_result", None)
         if callable(format_result):
             text_output = format_result(structured_result)
@@ -239,7 +252,7 @@ def _execute_tool(tool: BaseTool, arguments: dict[str, object]) -> tuple[str, di
                 text_output = summary
         return text_output, structured_result
 
-    text_output = tool.execute(**arguments)
+    text_output = tool.execute(**merged_arguments)
     status = "failed" if text_output.startswith("ERROR:") else "completed"
     summary = text_output.removeprefix("ERROR: ").strip() if status == "failed" else text_output
     return text_output, {
