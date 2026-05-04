@@ -93,6 +93,14 @@ class AppConfig:
         )
     )
     default_feishu_webhook_url: str = field(default_factory=lambda: _get_env("DEFAULT_FEISHU_WEBHOOK_URL", ""))
+    feishu_webhook_url: str = field(
+        default_factory=lambda: _get_env(
+            "FEISHU_WEBHOOK_URL",
+            _get_env("DEFAULT_FEISHU_WEBHOOK_URL", ""),
+        )
+    )
+    github_token: str = field(default_factory=lambda: _get_env("GITHUB_TOKEN", ""))
+    github_api_url: str = field(default_factory=lambda: _get_env("GITHUB_API_URL", "https://api.github.com"))
     dotenv_path: str = field(default_factory=lambda: str(DEFAULT_DOTENV_PATH))
 
     def get(self, key: str, default: Any = None) -> Any:

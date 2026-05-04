@@ -2,6 +2,8 @@
 
 from .agent_messages import AgentTurn, MessageLike, ToolCall
 from .bug_event import BugEvent
+from .delivery_request import DeliveryRequest
+from .delivery_result import DeliveryResult
 from .incident_trigger import IncidentTrigger
 from .prepared_repair_task import PreparedRepairTask
 from .repo_workspace import RepoWorkspaceRequest, RepoWorkspaceResult
@@ -15,6 +17,8 @@ __all__ = [
     "AgentToolResult",
     "AgentTurn",
     "BugEvent",
+    "DeliveryRequest",
+    "DeliveryResult",
     "IncidentTrigger",
     "MessageLike",
     "PreparedRepairTask",

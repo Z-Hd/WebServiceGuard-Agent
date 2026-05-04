@@ -1,59 +1,83 @@
-from web_service_guard.primitive_tools.feishu_notify import FeishuNotify
-from web_service_guard.audit import audit_logger
+"""Notification helpers for the third-stage delivery flow."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from web_service_guard.integrations.feishu_client import FeishuClient
+
 
 class NotifyService:
-    """通知服务"""
-    
-    def __init__(self):
-        self.feishu_notify_tool = FeishuNotify()
-    
-    def send_notification(self, event, pr_url, repair_result):
-        """发送通知"""
-        try:
-            # 构建通知内容
-            body = {
-                "service": event.service,
-                "summary": event.error_summary,
-                "root_cause": repair_result.get('artifacts', {}).get('repair_plan', {}).get('root_cause', 'Unknown'),
-                "pr_url": pr_url
+    """Build and send a compact Feishu notification for a published repair."""
+
+    def __init__(self, *, feishu_client: FeishuClient | None = None) -> None:
+        self._feishu_client = feishu_client or FeishuClient()
+
+    def send_notification(
+        self,
+        *,
+        prepared_task: Any,
+        repair_result: dict[str, Any],
+        pr_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = self.build_payload(
+            prepared_task=prepared_task,
+            repair_result=repair_result,
+            pr_result=pr_result,
+        )
+        response = self._feishu_client.send_webhook(payload)
+        response.update(
+            {
+                "channel": "feishu",
+                "payload": payload,
             }
-            
-            # 执行飞书通知
-            result = self.feishu_notify_tool.execute(
-                run_id=repair_result.get('run_id'),
-                iteration=0,
-                input_data={
-                    "title": "Bug 自动修复通知",
-                    "body": body
-                },
-                constraints={
-                    "read_only": True
+        )
+        return response
+
+    def build_payload(
+        self,
+        *,
+        prepared_task: Any,
+        repair_result: dict[str, Any],
+        pr_result: dict[str, Any],
+    ) -> dict[str, Any]:
+        bug_event = _extract_bug_event(prepared_task)
+        artifacts = repair_result.get("artifacts", {})
+        plan_output = ((artifacts.get("plan") or {}).get("output") or {})
+        verify_output = ((artifacts.get("verify") or {}).get("output") or {})
+        verification = verify_output.get("verification_result") or {}
+        root_cause = ((plan_output.get("root_cause_analysis") or {}).get("root_cause") or "Unknown")
+        verdict = verification.get("verdict") or "UNKNOWN"
+        pr_url = pr_result.get("url") or "(PR URL unavailable)"
+
+        markdown = (
+            f"**Auto-fix ready for review**\n"
+            f"- Service: {bug_event.get('service', 'unknown')}\n"
+            f"- Summary: {bug_event.get('error_summary', 'unknown incident')}\n"
+            f"- Root Cause: {root_cause}\n"
+            f"- Verification: {verdict}\n"
+            f"- Run ID: {repair_result.get('run_id', '')}\n"
+            f"- PR: {pr_url}"
+        )
+        return {
+            "msg_type": "post",
+            "content": {
+                "post": {
+                    "zh_cn": {
+                        "title": "Web Service Guard 自动修复通知",
+                        "content": [[{"tag": "text", "text": markdown}]],
+                    }
                 }
-            )
-            
-            if result.get('status') == 'SUCCESS':
-                output = result.get('output', {})
-                
-                # 记录通知发送
-                audit_logger.log_notification_sent(
-                    run_id=repair_result.get('run_id'),
-                    delivered=output.get('delivered'),
-                    message_id=output.get('message_id'),
-                    recipient=output.get('recipient')
-                )
-                
-                return {
-                    "status": "SUCCESS",
-                    "delivered": output.get('delivered'),
-                    "message_id": output.get('message_id')
-                }
-            else:
-                return {
-                    "status": "FAILED",
-                    "message": "通知发送失败"
-                }
-        except Exception as e:
-            return {
-                "status": "FAILED",
-                "message": str(e)
-            }
+            },
+        }
+
+
+def _extract_bug_event(prepared_task: Any) -> dict[str, Any]:
+    repair_task = getattr(prepared_task, "repair_task", None)
+    if repair_task is not None:
+        bug_event = getattr(repair_task, "bug_event", None)
+        if hasattr(bug_event, "to_dict"):
+            return bug_event.to_dict()
+    if isinstance(prepared_task, dict):
+        return dict((prepared_task.get("repair_task") or {}).get("bug_event") or {})
+    return {}

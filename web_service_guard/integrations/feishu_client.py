@@ -1,60 +1,64 @@
+"""Structured Feishu webhook client used by the third-stage delivery flow."""
+
+from __future__ import annotations
+
+from typing import Any
+
 import requests
-import json
+
 from web_service_guard.config import config
 
+
 class FeishuClient:
-    """飞书客户端"""
-    
-    def __init__(self):
-        self.app_id = config.feishu_app_id
-        self.app_secret = config.feishu_app_secret
-        self.access_token = None
-    
-    def get_access_token(self):
-        """获取访问令牌"""
+    """Send delivery notifications through a Feishu incoming webhook."""
+
+    def __init__(
+        self,
+        *,
+        webhook_url: str | None = None,
+        session: requests.Session | None = None,
+        timeout_sec: int = 15,
+    ) -> None:
+        self._webhook_url = webhook_url if webhook_url is not None else config.feishu_webhook_url
+        self._session = session or requests.Session()
+        self._timeout_sec = timeout_sec
+
+    def send_webhook(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if not self._webhook_url:
+            return {
+                "sent": False,
+                "error": "Missing Feishu webhook URL.",
+            }
+
+        response = self._session.post(
+            self._webhook_url,
+            json=payload,
+            timeout=self._timeout_sec,
+        )
+        if response.status_code >= 400:
+            return {
+                "sent": False,
+                "status_code": response.status_code,
+                "error": response.text.strip() or "Feishu webhook request failed.",
+            }
+
         try:
-            url = "https://open.feishu.cn/open-apis/auth/v3/app_access_token/internal/"
-            payload = {
-                "app_id": self.app_id,
-                "app_secret": self.app_secret
+            response_payload = response.json()
+        except ValueError:
+            response_payload = {"raw": response.text}
+
+        success = bool(response_payload.get("StatusCode") in {0, None} and response_payload.get("code") in {0, None})
+        if not success:
+            message = response_payload.get("StatusMessage") or response_payload.get("msg") or "Feishu webhook request failed."
+            return {
+                "sent": False,
+                "status_code": response.status_code,
+                "error": str(message),
+                "raw": response_payload,
             }
-            response = requests.post(url, json=payload)
-            result = response.json()
-            if result.get('code') == 0:
-                self.access_token = result.get('app_access_token')
-                return self.access_token
-            else:
-                print(f"Error getting access token: {result.get('msg')}")
-                return None
-        except Exception as e:
-            print(f"Error getting access token: {e}")
-            return None
-    
-    def send_message(self, receive_id, receive_id_type, msg_type, content):
-        """发送消息"""
-        try:
-            if not self.access_token:
-                self.get_access_token()
-            
-            url = "https://open.feishu.cn/open-apis/im/v1/messages"
-            headers = {
-                "Authorization": f"Bearer {self.access_token}",
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "receive_id_type": receive_id_type,
-                "receive_id": receive_id,
-                "content": content,
-                "msg_type": msg_type
-            }
-            
-            response = requests.post(url, headers=headers, json=payload)
-            result = response.json()
-            if result.get('code') == 0:
-                return result.get('data', {})
-            else:
-                print(f"Error sending message: {result.get('msg')}")
-                return None
-        except Exception as e:
-            print(f"Error sending message: {e}")
-            return None
+
+        return {
+            "sent": True,
+            "status_code": response.status_code,
+            "raw": response_payload,
+        }

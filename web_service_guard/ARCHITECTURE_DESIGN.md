@@ -50,7 +50,7 @@
 
 ```text
 阶段一：异常感知与 Traceback 获取
-    -> 产出标准化修复任务
+    -> 产出标准化修复任务 + 准备好的工作区
 
 阶段二：基于 Tool Use 的循环式自动修复
     -> Explore / Plan / Execute / Verify
