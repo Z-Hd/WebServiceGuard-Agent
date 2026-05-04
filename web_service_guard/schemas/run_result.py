@@ -6,7 +6,11 @@ from dataclasses import dataclass, field
 from typing import Any
 from typing import Literal
 
+<<<<<<< HEAD
 from .agent_messages import MessageLike, ToolCall
+=======
+from schemas.agent_messages import MessageLike, ToolCall
+>>>>>>> a1ef785ad28bb576fdad597597c3fa90f22bfa28
 
 
 @dataclass(slots=True)

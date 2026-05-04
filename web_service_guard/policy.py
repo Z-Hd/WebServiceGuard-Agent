@@ -1,4 +1,5 @@
 """Guardrail and policy checks that constrain automatic repair behavior."""
+<<<<<<< HEAD
 
 from __future__ import annotations
 
@@ -24,3 +25,5 @@ class Policy:
         if not risk_level:
             return False
         return str(risk_level).strip().lower() in Policy.HIGH_RISK_LEVELS
+=======
+>>>>>>> a1ef785ad28bb576fdad597597c3fa90f22bfa28

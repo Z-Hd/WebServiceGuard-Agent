@@ -1,4 +1,5 @@
 """Shared enumerations for statuses, risks, tool results, and audit event types."""
+<<<<<<< HEAD
 
 from __future__ import annotations
 
@@ -16,3 +17,5 @@ class RiskLevel(str, Enum):
     MEDIUM = "medium"
     HIGH = "high"
     CRITICAL = "critical"
+=======
+>>>>>>> a1ef785ad28bb576fdad597597c3fa90f22bfa28

@@ -376,10 +376,174 @@ def test_orchestrator_writes_formal_tool_result_observations() -> None:
     assert len(fake_agent_tool.calls) == 1
     assert fake_agent_tool.calls[0]["run_id"] == "run-001"
     assert fake_agent_tool.calls[0]["iteration"] == 1
+<<<<<<< HEAD
+=======
+    assert "Investigate traceback" in fake_agent_tool.calls[0]["input"]["user_prompt"]
+    assert fake_agent_tool.calls[0]["input"]["orchestrator_context"]["traceback"] == "Traceback (most recent call last): ..."
+    assert fake_agent_tool.calls[0]["input"]["agent_inputs"]["traceback"] == "Traceback (most recent call last): ..."
+>>>>>>> a1ef785ad28bb576fdad597597c3fa90f22bfa28
     assert fake_agent_tool.calls[0]["input"]["traceback"] == "Traceback (most recent call last): ..."
     assert result["artifacts"]["explore"]["output"]["repair_context"]["bug_summary"] == "Located bug in app.py"
 
 
+<<<<<<< HEAD
+=======
+def test_orchestrator_plan_payload_uses_global_context_not_only_explore_output() -> None:
+    main_adapter = StubMainLLMAdapter(
+        [
+            AgentTurn(
+                kind="tool",
+                content="Explore first",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "user_prompt": "Investigate traceback"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Now plan",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "user_prompt": "Create a repair plan from the current evidence"}),
+            ),
+            AgentTurn(kind="final", content="NEED_HUMAN_REVIEW"),
+        ]
+    )
+    fake_agent_tool = FakeAgentTool(
+        {
+            "explore": [
+                make_agent_result(
+                    agent_type="explore",
+                    summary="Located bug in app.py",
+                    output=make_explore_output(),
+                )
+            ],
+            "plan": [
+                make_agent_result(
+                    agent_type="plan",
+                    summary="Plan drafted",
+                    output=make_plan_output(),
+                )
+            ],
+        }
+    )
+
+    run(make_task_input(), llm_adapter=main_adapter, agent_tool=fake_agent_tool)
+
+    plan_call = fake_agent_tool.calls[1]
+    assert plan_call["agent_tool"] == "plan"
+    assert plan_call["input"]["repair_context"] == make_explore_output()
+    assert plan_call["input"]["orchestrator_context"]["artifacts"]["explore"]["summary"] == "Located bug in app.py"
+    assert "Create a repair plan from the current evidence" in plan_call["input"]["user_prompt"]
+    assert "Located bug in app.py" in plan_call["input"]["user_prompt"]
+
+
+def test_orchestrator_verify_to_plan_reuses_verify_findings_in_briefing() -> None:
+    main_adapter = StubMainLLMAdapter(
+        [
+            AgentTurn(
+                kind="tool",
+                content="Verify current state",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "verify", "user_prompt": "Re-check the patch and report failures"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Revise the plan",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "user_prompt": "Revise the repair plan using the latest failures"}),
+            ),
+            AgentTurn(kind="final", content="NEED_HUMAN_REVIEW"),
+        ]
+    )
+    fake_agent_tool = FakeAgentTool(
+        {
+            "verify": [
+                make_agent_result(
+                    agent_type="verify",
+                    summary="VERDICT: FAIL",
+                    output={
+                        "verification_result": {
+                            "verdict": "FAIL",
+                            "targeted_tests_passed": False,
+                            "smoke_tests_passed": False,
+                            "failed_tests": ["test_bug_fix"],
+                            "failure_logs": ["AssertionError: expected false, got true"],
+                            "ready_for_pr": False,
+                        }
+                    },
+                )
+            ],
+            "plan": [
+                make_agent_result(
+                    agent_type="plan",
+                    summary="Plan revised",
+                    output=make_plan_output(),
+                )
+            ],
+        }
+    )
+
+    run(make_task_input(), llm_adapter=main_adapter, agent_tool=fake_agent_tool)
+
+    plan_call = fake_agent_tool.calls[1]
+    assert plan_call["input"]["orchestrator_context"]["artifacts"]["verify"]["summary"] == "VERDICT: FAIL"
+    assert "VERDICT: FAIL" in plan_call["input"]["user_prompt"]
+    assert "failed_tests=test_bug_fix" in plan_call["input"]["user_prompt"]
+
+
+def test_orchestrator_plan_to_explore_reuses_plan_uncertainty_in_briefing() -> None:
+    main_adapter = StubMainLLMAdapter(
+        [
+            AgentTurn(
+                kind="tool",
+                content="Plan first from partial evidence",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "user_prompt": "Draft a repair plan from current evidence"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Explore unresolved details",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "user_prompt": "Investigate the unresolved uncertainty from planning"}),
+            ),
+            AgentTurn(kind="final", content="NEED_HUMAN_REVIEW"),
+        ]
+    )
+    partial_plan_output = {
+        "root_cause_analysis": {
+            "root_cause": "Possibly null guard or missing config branch",
+            "evidence": ["Two plausible branches remain"],
+            "risk_level": "medium",
+        },
+        "repair_plan": {
+            "root_cause": "Possibly null guard or missing config branch",
+            "fix_plan": ["Need more evidence before editing"],
+            "files_to_modify": ["app.py"],
+            "risk_level": "medium",
+        },
+        "tests_to_run": [],
+        "need_human_review": False,
+    }
+    fake_agent_tool = FakeAgentTool(
+        {
+            "plan": [
+                make_agent_result(
+                    agent_type="plan",
+                    summary="Planning found unresolved ambiguity",
+                    output=partial_plan_output,
+                )
+            ],
+            "explore": [
+                make_agent_result(
+                    agent_type="explore",
+                    summary="Additional evidence gathered",
+                    output=make_explore_output(),
+                )
+            ],
+        }
+    )
+
+    run(make_task_input(), llm_adapter=main_adapter, agent_tool=fake_agent_tool)
+
+    explore_call = fake_agent_tool.calls[1]
+    assert explore_call["input"]["orchestrator_context"]["artifacts"]["plan"]["summary"] == "Planning found unresolved ambiguity"
+    assert "Planning found unresolved ambiguity" in explore_call["input"]["user_prompt"]
+    assert "Investigate the unresolved uncertainty from planning" in explore_call["input"]["user_prompt"]
+
+
+>>>>>>> a1ef785ad28bb576fdad597597c3fa90f22bfa28
 def test_orchestrator_escalates_when_explore_context_is_insufficient() -> None:
     main_adapter = StubMainLLMAdapter(
         [
