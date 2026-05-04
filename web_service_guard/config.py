@@ -5,7 +5,17 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
+
+from dotenv import load_dotenv
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_DOTENV_PATH = PROJECT_ROOT / ".env"
+
+# Load repository-local environment variables once during import.
+load_dotenv(DEFAULT_DOTENV_PATH, override=False)
 
 
 def _get_env(name: str, default: str) -> str:
@@ -57,7 +67,7 @@ class AppConfig:
     default_repo_url: str = field(
         default_factory=lambda: _get_env(
             "DEFAULT_REPO_URL",
-            "https://github.com/lauder0/demo-web-service-repo.git",
+            "",
         )
     )
     default_branch: str = field(default_factory=lambda: _get_env("DEFAULT_BRANCH", "main"))
@@ -67,22 +77,23 @@ class AppConfig:
     default_repo_root: str = field(
         default_factory=lambda: _get_env(
             "DEFAULT_REPO_ROOT",
-            r"E:\projeccts\demo-web-service-repo",
+            "",
         )
     )
     default_runtime_root: str = field(
         default_factory=lambda: _get_env(
             "DEFAULT_RUNTIME_ROOT",
-            r"E:\projeccts\demo-web-service-runtime",
+            "",
         )
     )
     default_runtime_log_path: str = field(
         default_factory=lambda: _get_env(
             "DEFAULT_RUNTIME_LOG_PATH",
-            r"E:\projeccts\demo-web-service-runtime\logs\demo_service.log",
+            "./runtime.log",
         )
     )
     default_feishu_webhook_url: str = field(default_factory=lambda: _get_env("DEFAULT_FEISHU_WEBHOOK_URL", ""))
+    dotenv_path: str = field(default_factory=lambda: str(DEFAULT_DOTENV_PATH))
 
     def get(self, key: str, default: Any = None) -> Any:
         """Dict-like compatibility helper for older code."""

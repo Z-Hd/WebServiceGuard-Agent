@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from schemas.agent_messages import ToolCall
-from schemas.run_result import ToolExecutionRecord
+from .agent_messages import ToolCall
+from .run_result import ToolExecutionRecord
 
 
 @dataclass(slots=True)
