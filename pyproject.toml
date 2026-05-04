@@ -27,8 +27,4 @@ requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.pytest.ini_options]
-<<<<<<< HEAD
 testpaths = ["web_service_guard/tests"]
-=======
-testpaths = ["tests"]
->>>>>>> a1ef785ad28bb576fdad597597c3fa90f22bfa28

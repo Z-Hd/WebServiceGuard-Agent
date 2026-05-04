@@ -376,18 +376,13 @@ def test_orchestrator_writes_formal_tool_result_observations() -> None:
     assert len(fake_agent_tool.calls) == 1
     assert fake_agent_tool.calls[0]["run_id"] == "run-001"
     assert fake_agent_tool.calls[0]["iteration"] == 1
-<<<<<<< HEAD
-=======
     assert "Investigate traceback" in fake_agent_tool.calls[0]["input"]["user_prompt"]
     assert fake_agent_tool.calls[0]["input"]["orchestrator_context"]["traceback"] == "Traceback (most recent call last): ..."
     assert fake_agent_tool.calls[0]["input"]["agent_inputs"]["traceback"] == "Traceback (most recent call last): ..."
->>>>>>> a1ef785ad28bb576fdad597597c3fa90f22bfa28
     assert fake_agent_tool.calls[0]["input"]["traceback"] == "Traceback (most recent call last): ..."
     assert result["artifacts"]["explore"]["output"]["repair_context"]["bug_summary"] == "Located bug in app.py"
 
 
-<<<<<<< HEAD
-=======
 def test_orchestrator_plan_payload_uses_global_context_not_only_explore_output() -> None:
     main_adapter = StubMainLLMAdapter(
         [
@@ -543,7 +538,6 @@ def test_orchestrator_plan_to_explore_reuses_plan_uncertainty_in_briefing() -> N
     assert "Investigate the unresolved uncertainty from planning" in explore_call["input"]["user_prompt"]
 
 
->>>>>>> a1ef785ad28bb576fdad597597c3fa90f22bfa28
 def test_orchestrator_escalates_when_explore_context_is_insufficient() -> None:
     main_adapter = StubMainLLMAdapter(
         [

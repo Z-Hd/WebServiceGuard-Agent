@@ -1,5 +1,4 @@
 """Centralized configuration definitions for runtime, tools, and integrations."""
-<<<<<<< HEAD
 
 from __future__ import annotations
 
@@ -92,5 +91,3 @@ class AppConfig:
 
 
 config = AppConfig()
-=======
->>>>>>> a1ef785ad28bb576fdad597597c3fa90f22bfa28

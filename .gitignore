@@ -59,9 +59,6 @@ tmp_agent_tool_*.py
 # Environment variables
 .env
 .env.local
-<<<<<<< HEAD
 
 # Local demos and scratch examples
 examples/
-=======
->>>>>>> a1ef785ad28bb576fdad597597c3fa90f22bfa28

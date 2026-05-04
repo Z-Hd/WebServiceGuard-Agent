@@ -6,10 +6,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from agents.registry import get_agent_definition
-<<<<<<< HEAD
-=======
 from agents.registry import BUILTIN_AGENTS
->>>>>>> a1ef785ad28bb576fdad597597c3fa90f22bfa28
 from audit import AgentRunAuditRecord, record_agent_run
 from errors import (
     ORCH_AGENT_FAILED,
@@ -23,10 +20,7 @@ from errors import (
     TOOL_RUN_TEST_FAILED,
     make_error,
 )
-<<<<<<< HEAD
-=======
 from prompts.agent_tool import build_agent_tool_description
->>>>>>> a1ef785ad28bb576fdad597597c3fa90f22bfa28
 from runtime.engine import LLMAdapter, run_agent
 from runtime.runtime_state import ToolUseContext
 from runtime.tool_resolution import ResolvedAgentTools, resolve_agent_tools
@@ -39,11 +33,7 @@ class AgentTool(BaseTool):
     """Single dispatcher that runs a configured sub-agent by type."""
 
     name = "agent"
-<<<<<<< HEAD
-    description = "Dispatch a sub-agent using the shared AgentEngine."
-=======
     description = build_agent_tool_description(BUILTIN_AGENTS.values())
->>>>>>> a1ef785ad28bb576fdad597597c3fa90f22bfa28
     input_schema = {
         "type": "object",
         "properties": {
@@ -65,10 +55,7 @@ class AgentTool(BaseTool):
         self._llm_adapter = llm_adapter
         self._tool_registry = tool_registry or global_tool_registry
         self._default_max_turns = default_max_turns
-<<<<<<< HEAD
-=======
         self.description = build_agent_tool_description(BUILTIN_AGENTS.values())
->>>>>>> a1ef785ad28bb576fdad597597c3fa90f22bfa28
 
     def execute(
         self,
