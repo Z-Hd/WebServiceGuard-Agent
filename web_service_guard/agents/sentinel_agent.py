@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
@@ -12,8 +13,15 @@ from web_service_guard.monitoring.traceback_collector import TracebackCollector
 from web_service_guard.schemas.bug_event import BugEvent
 from web_service_guard.schemas.incident_trigger import IncidentTrigger
 from web_service_guard.schemas.repair_task import RepairTask
-from web_service_guard.workflow.repair_task_factory import RepairTaskFactory
-from web_service_guard.workflow.stage_router import StageRouter
+
+
+@dataclass(slots=True)
+class StageOneDecision:
+    """Result of the first-phase admission check before task creation."""
+
+    accepted: bool
+    reason: str
+    code: str
 
 
 class SentinelAgent:
@@ -25,7 +33,6 @@ class SentinelAgent:
         traceback_collector: TracebackCollector | None = None,
         event_detector: EventDetector | None = None,
         dedup_store: InMemoryDedupStore | None = None,
-        repair_task_factory: RepairTaskFactory | None = None,
         max_iterations: int | None = None,
     ) -> None:
         self.traceback_collector = traceback_collector or TracebackCollector(
@@ -34,9 +41,6 @@ class SentinelAgent:
         self.event_detector = event_detector or EventDetector()
         self.dedup_store = dedup_store or InMemoryDedupStore(
             ttl_sec=config.stage_one_dedup_ttl_sec
-        )
-        self.repair_task_factory = repair_task_factory or RepairTaskFactory(
-            default_max_iterations=max_iterations or config.max_iterations
         )
         self.max_iterations = max_iterations or config.max_iterations
 
@@ -86,11 +90,11 @@ class SentinelAgent:
                 seen_at=bug_event.detected_at,
             ):
                 continue
-            decision = StageRouter.evaluate_bug_event(bug_event)
+            decision = self.evaluate_bug_event(bug_event)
             if not decision.accepted:
                 continue
             tasks.append(
-                self.repair_task_factory.build(
+                self.build_repair_task(
                     bug_event=bug_event,
                     repo_root=repo_root,
                     max_iterations=self.max_iterations,
@@ -122,6 +126,50 @@ class SentinelAgent:
             trigger,
             repo_root=repo_root or config.default_repo_root,
         )
+
+    def evaluate_bug_event(self, bug_event: BugEvent) -> StageOneDecision:
+        """Apply the first-phase admission checks for a normalized bug event."""
+
+        if not bug_event.traceback.strip():
+            return StageOneDecision(False, "缺少有效 Traceback", "S1_TRACEBACK_MISSING")
+        if not bug_event.repo.strip():
+            return StageOneDecision(False, "缺少仓库信息", "S1_REPO_MISSING")
+        if not bug_event.branch.strip():
+            return StageOneDecision(False, "缺少分支信息", "S1_BRANCH_MISSING")
+        return StageOneDecision(True, "可以进入修复阶段", "S1_EVENT_ACCEPTED")
+
+    def build_repair_task(
+        self,
+        *,
+        bug_event: BugEvent,
+        repo_root: str,
+        max_iterations: int | None = None,
+        requested_by: str = "system",
+        priority: str = "normal",
+        constraints: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> RepairTask:
+        """Create the canonical repair task emitted by phase one."""
+
+        created_at = _utc_now()
+        return RepairTask(
+            run_id=self._build_run_id(bug_event, created_at),
+            bug_event=bug_event,
+            repo_root=repo_root,
+            max_iterations=max_iterations or self.max_iterations,
+            priority=priority,
+            requested_by=requested_by,
+            created_at=created_at,
+            constraints=dict(constraints or {}),
+            metadata=dict(metadata or {}),
+        )
+
+    def _build_run_id(self, bug_event: BugEvent, created_at: str) -> str:
+        service_slug = bug_event.service.strip().replace("/", "-").replace(" ", "-") or "service"
+        fingerprint = bug_event.fingerprint[:8]
+        timestamp = created_at.replace("-", "").replace(":", "").replace(".", "")
+        timestamp = timestamp.replace("+0000", "Z").replace("+00:00", "Z")
+        return f"repair_{service_slug}_{fingerprint}_{timestamp}"
 
 
 def _utc_now() -> str:

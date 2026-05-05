@@ -1,8 +1,8 @@
 from flask import Flask, request, jsonify
-from web_service_guard.workflow.repair_pipeline import RepairPipeline
+from web_service_guard.workflow.repair_pipeline import StageOnePipeline
 
 app = Flask(__name__)
-pipeline = RepairPipeline()
+pipeline = StageOnePipeline()
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
