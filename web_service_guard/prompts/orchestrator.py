@@ -33,7 +33,7 @@ def build_orchestrator_initial_messages(
     user_content = (
         "Repair task received.\n"
         f"run_id: {task_input.get('run_id')}\n"
-        f"repo: {task_input.get('repo')}\n"
+        f"repo_root: {task_input.get('repo_root')}\n"
         f"branch: {task_input.get('branch')}\n"
         f"max_iterations: {task_input.get('max_iterations', default_max_iterations)}\n"
         f"bug_event: {json.dumps(task_input.get('bug_event', {}), ensure_ascii=False)}\n"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import shlex
 import subprocess
@@ -21,6 +22,7 @@ from tools.base import BaseTool
 
 DEFAULT_TIMEOUT_SEC = 30
 READ_ONLY_COMMAND_PREFIXES = ("pwd", "ls", "cat", "head", "tail", "echo")
+WINDOWS_READ_ONLY_COMMAND_PREFIXES = ("cd", "dir", "type")
 PYTHON_BINARIES = {"python", "python3"}
 PYTHON_MODULE_TEST_RUNNERS = {"pytest", "unittest"}
 SIMPLE_TEST_COMMANDS = ("pytest",)
@@ -246,6 +248,10 @@ class BashTool(BaseTool):
         lowered = command.lower()
         if any(lowered.startswith(prefix) for prefix in READ_ONLY_COMMAND_PREFIXES):
             return True
+        if any(lowered.startswith(prefix) for prefix in WINDOWS_READ_ONLY_COMMAND_PREFIXES):
+            return True
+        if self._is_allowed_windows_head_tail_command(lowered):
+            return True
         if any(lowered.startswith(prefix) for prefix in NODE_TEST_PREFIXES):
             return True
         if any(lowered.startswith(prefix) for prefix in SIMPLE_TEST_COMMANDS):
@@ -268,6 +274,19 @@ class BashTool(BaseTool):
                 script = parts[1]
                 return script.endswith(".py")
         return False
+
+    def _is_allowed_windows_head_tail_command(self, lowered: str) -> bool:
+        if os.name != "nt":
+            return False
+        windows_head_tail_prefixes = (
+            "powershell -command get-content",
+            "powershell -c get-content",
+            "pwsh -command get-content",
+            "pwsh -c get-content",
+        )
+        if not any(lowered.startswith(prefix) for prefix in windows_head_tail_prefixes):
+            return False
+        return "-head" in lowered or "-tail" in lowered
 
     def _build_error(self, *, code: str, message: str) -> dict[str, Any]:
         return {

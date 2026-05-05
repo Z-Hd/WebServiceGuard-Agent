@@ -79,12 +79,17 @@ class AgentTool(BaseTool):
         definition = get_agent_definition(agent_type)
         resolved_tools = self._resolve_tools(definition)
         context = self._build_tool_use_context(resolved_tools, tool_use_context)
+        system_prompt = self._resolve_system_prompt(
+            definition=definition,
+            system_prompt_override=system_prompt_override,
+            tool_use_context=context,
+        )
 
         result = run_agent(
             llm_adapter=self._llm_adapter,
             tools=resolved_tools.tools,
             agent_type=definition.agent_type,
-            system_prompt=system_prompt_override or definition.system_prompt,
+            system_prompt=system_prompt,
             user_prompt=effective_prompt,
             tool_use_context=context,
             max_turns=max_turns or definition.max_turns or self._default_max_turns,
@@ -116,6 +121,39 @@ class AgentTool(BaseTool):
         tool_use_context.read_only = resolved_tools.read_only
         tool_use_context.permission_mode = resolved_tools.permission_mode
         return tool_use_context
+
+    def _resolve_system_prompt(
+        self,
+        *,
+        definition: Any,
+        system_prompt_override: Optional[str],
+        tool_use_context: ToolUseContext,
+    ) -> str:
+        if system_prompt_override:
+            return system_prompt_override
+        if definition.agent_type == "verify":
+            os_name = tool_use_context.os_name or "unknown"
+            os_guidance = (
+                "\n\n=== CURRENT RUNTIME OS ===\n"
+                f"The current runtime OS is `{os_name}`.\n"
+                "Choose commands that are valid on this OS.\n"
+                "Prefer cross-platform Python-based validation commands over shell-specific commands whenever possible.\n"
+            )
+            if os_name == "windows":
+                os_guidance += (
+                    "On Windows, prefer `python -m pytest ...` or `python -m unittest ...` over bare `pytest` when possible. "
+                    "Use `dir` only when a directory listing is genuinely needed, and avoid Unix-only commands unless you know they are available."
+                )
+                if tool_use_context.repo_root:
+                    repo_root = tool_use_context.repo_root.replace("\\", "\\\\")
+                    os_guidance += (
+                        "\nIf `python -m pytest -v tests/` fails with `No module named demo_service`, "
+                        "rerun verification with this Python wrapper so the repo root is added to `sys.path`:\n"
+                        f"`python -c \"import sys, pytest; sys.path.insert(0, r'{repo_root}'); "
+                        "raise SystemExit(pytest.main(['-v', 'tests/']))\"`"
+                    )
+            return definition.system_prompt + os_guidance
+        return definition.system_prompt
 
     def _build_agent_tool_result(
         self,
@@ -197,7 +235,6 @@ class AgentTool(BaseTool):
             candidate_files = self._extract_candidate_files(result)
             evidence = self._extract_evidence(result)
             tests_to_run = self._extract_related_tests(result)
-            need_human_review = result.status != "completed" or not candidate_files or not evidence
             repair_plan = {
                 "root_cause": result.summary,
                 "fix_plan": [result.summary],
@@ -212,7 +249,6 @@ class AgentTool(BaseTool):
                 },
                 "repair_plan": repair_plan,
                 "tests_to_run": tests_to_run,
-                "need_human_review": need_human_review,
             }
         if agent_type == "execute":
             modified_files = self._extract_candidate_files(result)

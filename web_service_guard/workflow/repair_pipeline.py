@@ -64,6 +64,31 @@ class StageOnePipeline:
             for repair_task in repair_tasks
         ]
 
+    def run_stage_two_inputs(
+        self,
+        *,
+        service: str | None = None,
+        repo: str | None = None,
+        branch: str | None = None,
+        repo_root: str | None = None,
+        source: str = "log",
+        metadata: dict | None = None,
+    ) -> list[dict]:
+        """Run phase one and return stage-two-ready task_input dictionaries."""
+
+        prepared_tasks = self.run_prepared_tasks(
+            service=service,
+            repo=repo,
+            branch=branch,
+            repo_root=repo_root,
+            source=source,
+            metadata=metadata,
+        )
+        return [
+            prepared_task.to_stage_two_input()
+            for prepared_task in prepared_tasks
+        ]
+
     def run(self, service=None, repo=None, branch=None, repo_root=None):
         """Compatibility wrapper returning serialized repair-task payloads."""
 

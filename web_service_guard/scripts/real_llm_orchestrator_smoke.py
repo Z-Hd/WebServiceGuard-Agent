@@ -77,7 +77,7 @@ def make_task_input() -> dict[str, Any]:
         "run_id": "smoke-run-001",
         "bug_event": {"service": "demo", "error": "ValueError"},
         "traceback": "Traceback (most recent call last): ValueError in app.py line 42",
-        "repo": "demo-repo",
+        "repo_root": "demo-repo",
         "branch": "main",
         "max_iterations": 1,
     }

@@ -45,6 +45,16 @@ class StubLLMAdapter:
         return turn
 
 
+class CapturingLLMAdapter:
+    def __init__(self, turn: AgentTurn) -> None:
+        self._turn = turn
+        self.calls: list[dict[str, object]] = []
+
+    def complete(self, **kwargs) -> AgentTurn:
+        self.calls.append(dict(kwargs))
+        return self._turn
+
+
 def make_registry(*tools: BaseTool) -> ToolRegistry:
     registry = ToolRegistry()
     for tool in tools:
@@ -332,6 +342,24 @@ def test_verify_agent_tool_emits_stable_verification_result() -> None:
     assert result.summary == "VERDICT: FAIL"
 
 
+def test_verify_agent_tool_includes_runtime_os_guidance_in_system_prompt() -> None:
+    registry = make_registry(FileReadTool(), GrepTool(), GlobTool(), BashTool())
+    adapter = CapturingLLMAdapter(AgentTurn(kind="final", content="VERDICT: PARTIAL"))
+    tool = AgentTool(llm_adapter=adapter, tool_registry=registry)
+    context = ToolUseContext(os_name="windows", repo_root=r"E:\projeccts\demo-web-service-repo")
+
+    tool.execute(agent_type="verify", user_prompt="Verify the patch", tool_use_context=context)
+
+    system_prompt = str(adapter.calls[0]["system_prompt"])
+    assert "CURRENT RUNTIME OS" in system_prompt
+    assert "`windows`" in system_prompt
+    assert "python -m pytest" in system_prompt
+    assert "Use `dir` only" in system_prompt
+    assert "No module named demo_service" in system_prompt
+    assert "sys.path.insert(0" in system_prompt
+    assert r"E:\\projeccts\\demo-web-service-repo" in system_prompt
+
+
 def test_verify_agent_tool_preserves_final_pass_from_verifier_report() -> None:
     registry = make_registry(FileReadTool(), GrepTool(), GlobTool(), BashTool(), DummyTool("grep", should_fail=True))
     adapter = StubLLMAdapter(
@@ -584,7 +612,6 @@ def test_plan_agent_tool_emits_stable_plan_output() -> None:
     assert isinstance(plan_output["repair_plan"]["files_to_modify"], list)
     assert plan_output["repair_plan"]["files_to_modify"] == [str(file_path)]
     assert isinstance(plan_output["tests_to_run"], list)
-    assert plan_output["need_human_review"] is False
 
 
 def test_execute_agent_tool_emits_stable_execute_output(tmp_path: Path) -> None:

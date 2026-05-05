@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import platform
+import re
+from dataclasses import dataclass
 from typing import Any
 
 from agents.registry import get_agent_definition
@@ -35,6 +38,17 @@ from schemas.agent_messages import AgentTurn, MessageLike, ToolCall
 from schemas.tool_result import AgentToolResult
 from tools.agent_tool import AgentTool
 from tools.base import BaseTool, ToolRegistry, global_tool_registry
+
+
+@dataclass(slots=True)
+class PlanFallbackDecision:
+    """Fallback decision for incomplete plan outputs."""
+
+    used: bool
+    allow_continue: bool
+    reason: str
+    files_to_modify: list[str]
+    evidence: list[str]
 
 
 class RepairOrchestrator:
@@ -196,19 +210,28 @@ class RepairOrchestrator:
             run_id=run_id,
             bug_event=task_input.get("bug_event"),
             traceback=task_input.get("traceback"),
-            repo=task_input.get("repo"),
+            repo_root=task_input.get("repo_root"),
             branch=task_input.get("branch"),
             max_turns=max_iterations,
             tool_use_context=ToolUseContext(
                 allowed_tools=[self._agent_tool.name],
                 read_only=False,
-                repo_root=task_input.get("repo"),
+                repo_root=task_input.get("repo_root"),
+                os_name=self._detect_os_name(),
                 permission_mode="default",
             ),
             current_stage="ORCHESTRATOR",
         )
         state.messages.extend(self._build_initial_messages(task_input))
         return state
+
+    def _detect_os_name(self) -> str:
+        system = platform.system().strip().lower()
+        if system.startswith("win"):
+            return "windows"
+        if system == "darwin":
+            return "macos"
+        return system or "unknown"
 
     def finalize_run(self, state: RepairRuntimeState) -> dict[str, Any]:
         """Return the top-level structured result for one repair run."""
@@ -345,6 +368,7 @@ class RepairOrchestrator:
         }
 
     def _record_agent_observation(self, state: RepairRuntimeState, result: AgentToolResult) -> None:
+        plan_fallback = self._apply_plan_fallback(state, result)
         state.record_agent_result(
             agent_tool=result.agent_type,
             result=result,
@@ -363,6 +387,10 @@ class RepairOrchestrator:
             "artifacts": list(result.artifacts),
             "errors": list(result.errors),
         }
+        if result.agent_type == "plan" and plan_fallback is not None:
+            state.artifacts[result.agent_type]["fallback_used"] = plan_fallback.used
+            state.artifacts[result.agent_type]["fallback_reason"] = plan_fallback.reason
+            state.artifacts[result.agent_type]["fallback_files_to_modify"] = list(plan_fallback.files_to_modify)
         if result.agent_type == "verify":
             state.artifacts["_repair_iterations_used"] = self._repair_iterations_used(state) + 1
             state.post_verify_finalization_pending = True
@@ -436,14 +464,239 @@ class RepairOrchestrator:
         repair_plan = output.get("repair_plan", {})
         files_to_modify = repair_plan.get("files_to_modify", [])
         evidence = output.get("root_cause_analysis", {}).get("evidence", [])
-        need_human_review = output.get("need_human_review")
         return (
-            need_human_review is True
-            or not isinstance(files_to_modify, list)
+            not isinstance(files_to_modify, list)
             or len(files_to_modify) == 0
             or not isinstance(evidence, list)
             or len(evidence) == 0
         )
+
+    def _apply_plan_fallback(
+        self,
+        state: RepairRuntimeState,
+        result: AgentToolResult,
+    ) -> PlanFallbackDecision | None:
+        if result.agent_type != "plan":
+            return None
+
+        output = result.output
+        root_cause_analysis = output.setdefault("root_cause_analysis", {})
+        repair_plan = output.setdefault("repair_plan", {})
+        files_to_modify = repair_plan.get("files_to_modify", [])
+        evidence = root_cause_analysis.get("evidence", [])
+        if isinstance(files_to_modify, list) and files_to_modify and isinstance(evidence, list) and evidence:
+            return PlanFallbackDecision(
+                used=False,
+                allow_continue=True,
+                reason="structured_plan_complete",
+                files_to_modify=list(files_to_modify),
+                evidence=list(evidence),
+            )
+
+        fallback = self._resolve_plan_fallback(state, result)
+        if fallback.used and fallback.allow_continue:
+            repair_plan["files_to_modify"] = list(fallback.files_to_modify)
+            root_cause_analysis["evidence"] = list(fallback.evidence)
+        return fallback
+
+    def _resolve_plan_fallback(
+        self,
+        state: RepairRuntimeState,
+        result: AgentToolResult,
+    ) -> PlanFallbackDecision:
+        explore_output = ((state.artifacts.get("explore") or {}).get("output") or {})
+        repair_context = explore_output.get("repair_context", {})
+        suspect_files = explore_output.get("suspect_files") or repair_context.get("suspect_files") or []
+        code_snippets = repair_context.get("code_snippets") or []
+        context_completeness = explore_output.get("context_completeness")
+        if context_completeness != "sufficient":
+            return PlanFallbackDecision(
+                used=True,
+                allow_continue=False,
+                reason="fallback_blocked_explore_context_insufficient",
+                files_to_modify=[],
+                evidence=[],
+            )
+        if not isinstance(suspect_files, list) or len(suspect_files) == 0:
+            return PlanFallbackDecision(
+                used=True,
+                allow_continue=False,
+                reason="fallback_blocked_missing_suspect_files",
+                files_to_modify=[],
+                evidence=[],
+            )
+        if not isinstance(code_snippets, list) or len(code_snippets) == 0:
+            return PlanFallbackDecision(
+                used=True,
+                allow_continue=False,
+                reason="fallback_blocked_missing_code_snippets",
+                files_to_modify=[],
+                evidence=[],
+            )
+
+        output = result.output
+        risk_level = str(
+            (output.get("root_cause_analysis") or {}).get("risk_level")
+            or (output.get("repair_plan") or {}).get("risk_level")
+            or ""
+        ).strip().lower()
+        if risk_level in {"high", "critical"}:
+            return PlanFallbackDecision(
+                used=True,
+                allow_continue=False,
+                reason="fallback_blocked_high_risk_plan",
+                files_to_modify=[],
+                evidence=[],
+            )
+
+        summary = result.summary or ""
+        matched_files = self._extract_plan_summary_file_matches(summary, suspect_files)
+        if not matched_files:
+            return PlanFallbackDecision(
+                used=True,
+                allow_continue=False,
+                reason="fallback_blocked_no_actionable_file_match",
+                files_to_modify=[],
+                evidence=[],
+            )
+        if not self._has_clear_plan_action(summary, matched_files):
+            return PlanFallbackDecision(
+                used=True,
+                allow_continue=False,
+                reason="fallback_blocked_summary_lacks_clear_action",
+                files_to_modify=list(matched_files),
+                evidence=[],
+            )
+
+        evidence = self._build_fallback_evidence(summary, matched_files, code_snippets)
+        return PlanFallbackDecision(
+            used=True,
+            allow_continue=True,
+            reason="fallback_from_plan_summary_and_explore_context",
+            files_to_modify=list(matched_files),
+            evidence=evidence,
+        )
+
+    def _extract_plan_summary_file_matches(
+        self,
+        summary: str,
+        suspect_files: list[str],
+    ) -> list[str]:
+        matched: list[str] = []
+        summary_lower = summary.lower()
+        exact_matches = [path for path in suspect_files if path.lower() in summary_lower]
+        for path in exact_matches:
+            if path not in matched:
+                matched.append(path)
+
+        basename_map: dict[str, list[str]] = {}
+        suffix_map: dict[str, list[str]] = {}
+        for path in suspect_files:
+            normalized = path.replace("\\", "/")
+            basename = normalized.rsplit("/", 1)[-1].lower()
+            basename_map.setdefault(basename, []).append(path)
+            parts = normalized.split("/")
+            if len(parts) >= 2:
+                suffix = "/".join(parts[-2:]).lower()
+                suffix_map.setdefault(suffix, []).append(path)
+
+        summary_tokens = re.findall(r"[A-Za-z0-9_./\\\\-]+", summary)
+        for token in summary_tokens:
+            lowered = token.replace("\\", "/").lower().strip(".,:;`()[]{}<>\"'")
+            if not lowered:
+                continue
+            if lowered in suffix_map and len(suffix_map[lowered]) == 1:
+                candidate = suffix_map[lowered][0]
+                if candidate not in matched:
+                    matched.append(candidate)
+            if lowered in basename_map and len(basename_map[lowered]) == 1:
+                candidate = basename_map[lowered][0]
+                if candidate not in matched:
+                    matched.append(candidate)
+        return matched
+
+    def _has_clear_plan_action(self, summary: str, matched_files: list[str]) -> bool:
+        if not matched_files:
+            return False
+
+        summary_lower = summary.lower()
+        action_terms = (
+            "modify",
+            "change",
+            "add",
+            "update",
+            "catch",
+            "validate",
+            "return",
+            "raise",
+            "fix",
+            "replace",
+            "remove",
+            "handle",
+            "guard",
+            "patch",
+            "edit",
+            "调整",
+            "修改",
+            "新增",
+            "添加",
+            "更新",
+            "捕获",
+            "校验",
+            "返回",
+            "抛出",
+            "修复",
+            "替换",
+            "删除",
+            "处理",
+        )
+        uncertainty_terms = (
+            "suggest",
+            "recommend",
+            "maybe",
+            "possible",
+            "might",
+            "confirm",
+            "need more",
+            "further analysis",
+            "further investigate",
+            "unclear",
+            "consider",
+            "建议",
+            "确认",
+            "可能",
+            "需要进一步",
+            "进一步分析",
+            "进一步确认",
+            "也许",
+        )
+        has_action = any(term in summary_lower for term in action_terms)
+        has_uncertainty = any(term in summary_lower for term in uncertainty_terms)
+        if has_action:
+            return True
+        if has_uncertainty:
+            return False
+        return False
+
+    def _build_fallback_evidence(
+        self,
+        summary: str,
+        matched_files: list[str],
+        code_snippets: list[dict[str, Any]],
+    ) -> list[str]:
+        evidence: list[str] = []
+        for path in matched_files:
+            evidence.append(f"Fallback matched plan summary to suspect file: {path}")
+        snippet_text = "\n".join(str(snippet.get("content", "")) for snippet in code_snippets)
+        for path in matched_files:
+            basename = path.replace("\\", "/").rsplit("/", 1)[-1]
+            if basename and basename in snippet_text:
+                evidence.append(f"Explore captured code context for {path}")
+        if "traceback" in summary.lower():
+            evidence.append("Plan summary references traceback-derived failure context")
+        if not evidence:
+            evidence.append("Fallback accepted plan summary as actionable against explore context")
+        return evidence
 
     def _execute_requires_human_review(self, result: AgentToolResult) -> bool:
         output = result.output

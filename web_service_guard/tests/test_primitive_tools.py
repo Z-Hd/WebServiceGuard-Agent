@@ -506,6 +506,49 @@ def test_bash_tool_captures_stdout() -> None:
     assert "hello" in result["output"]["stdout"]
 
 
+def test_bash_tool_allows_windows_dir_command() -> None:
+    tool = BashTool()
+    result = tool._execute_structured(command="dir")
+
+    assert result["status"] == "completed"
+    assert result["output"]["exit_code"] == 0
+
+
+def test_bash_tool_allows_windows_cd_command() -> None:
+    tool = BashTool()
+    result = tool._execute_structured(command="cd")
+
+    assert result["status"] == "completed"
+    assert result["output"]["exit_code"] == 0
+
+
+def test_bash_tool_allows_windows_type_command(tmp_path: Path) -> None:
+    file_path = tmp_path / "sample.txt"
+    file_path.write_text("hello\nworld\n", encoding="utf-8")
+
+    tool = BashTool()
+    result = tool._execute_structured(command=f"type {file_path}")
+
+    assert result["status"] == "completed"
+    assert "hello" in result["output"]["stdout"]
+
+
+def test_bash_tool_allows_windows_powershell_head_tail_commands(tmp_path: Path) -> None:
+    file_path = tmp_path / "sample.txt"
+    file_path.write_text("one\ntwo\nthree\n", encoding="utf-8")
+
+    tool = BashTool()
+    head_result = tool._execute_structured(
+        command=f'powershell -Command Get-Content "{file_path}" -Head 1'
+    )
+    tail_result = tool._execute_structured(
+        command=f'powershell -Command Get-Content "{file_path}" -Tail 1'
+    )
+
+    assert head_result["status"] == "completed"
+    assert tail_result["status"] == "completed"
+
+
 def test_bash_tool_reports_nonzero_exit_code() -> None:
     tool = BashTool()
     result = tool._execute_structured(command="python3 -m unittest definitely_missing_test_module")

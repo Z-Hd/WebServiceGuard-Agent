@@ -14,6 +14,7 @@ USAGE_NOTES = (
     "- this tool is intended for test execution and constrained read-only shell usage, not arbitrary shell access\n"
     "- commands outside the runtime allowlist will be rejected\n"
     "- use this tool for commands such as test execution, `pwd`, `ls`, `cat`, `head`, `tail`, or simple echo-based checks when those commands are genuinely needed\n"
+    "- on Windows, the corresponding read-only commands `cd`, `dir`, `type`, or `powershell Get-Content -Head/-Tail` are also allowed when appropriate\n"
     "- do not use this tool for file modification, dependency installation, git write operations, or any other state-changing command\n"
     "- for open-ended multi-step investigation, prefer the `agent` tool instead of trying to do the entire investigation through shell commands"
 )

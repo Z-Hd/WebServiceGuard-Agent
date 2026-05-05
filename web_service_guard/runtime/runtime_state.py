@@ -46,6 +46,7 @@ class ToolUseContext:
     allowed_tools: list[str] = field(default_factory=list)
     read_only: bool = True
     repo_root: str | None = None
+    os_name: str | None = None
     permission_mode: str | None = None
     read_files: dict[str, ReadFileState] = field(default_factory=dict)
 
@@ -76,7 +77,7 @@ class RepairRuntimeState:
     run_id: str = ""
     bug_event: dict[str, Any] | None = None
     traceback: str | None = None
-    repo: str | None = None
+    repo_root: str | None = None
     branch: str | None = None
 
     # Tool and permission context

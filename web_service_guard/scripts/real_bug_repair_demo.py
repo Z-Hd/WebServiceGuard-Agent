@@ -300,7 +300,7 @@ def main() -> None:
                 "failing_test": str(TEST_FILE),
             },
             "traceback": traceback,
-            "repo": str(REPO_ROOT),
+            "repo_root": str(REPO_ROOT),
             "branch": "demo",
             "max_iterations": 2,
         },

@@ -107,7 +107,7 @@ def make_task_input(max_iterations: int = 3) -> dict[str, object]:
         "run_id": "run-001",
         "bug_event": {"service": "demo", "error": "ValueError"},
         "traceback": "Traceback (most recent call last): ...",
-        "repo": "demo-repo",
+        "repo_root": "demo-repo",
         "branch": "main",
         "max_iterations": max_iterations,
     }
@@ -136,22 +136,27 @@ def make_explore_output(
     }
 
 
-def make_plan_output(*, files_to_modify: list[str] | None = None, need_human_review: bool = False) -> dict[str, object]:
-    files = files_to_modify or ["app.py"]
+def make_plan_output(
+    *,
+    files_to_modify: list[str] | None = None,
+    evidence: list[str] | None = None,
+    risk_level: str = "medium",
+) -> dict[str, object]:
+    files = ["app.py"] if files_to_modify is None else files_to_modify
+    resolved_evidence = ["Traceback points to app.py:42"] if evidence is None else evidence
     return {
         "root_cause_analysis": {
             "root_cause": "Null guard missing in app.py",
-            "evidence": ["Traceback points to app.py:42"],
-            "risk_level": "medium",
+            "evidence": resolved_evidence,
+            "risk_level": risk_level,
         },
         "repair_plan": {
             "root_cause": "Null guard missing in app.py",
             "fix_plan": ["Add a null guard around the failing branch"],
             "files_to_modify": files,
-            "risk_level": "medium",
+            "risk_level": risk_level,
         },
         "tests_to_run": ["tests/test_app.py"],
-        "need_human_review": need_human_review,
     }
 
 
@@ -245,6 +250,14 @@ def test_orchestrator_runs_main_thread_agent_loop_to_ready_for_pr() -> None:
     assert result["current_stage"] == "READY_FOR_PR"
     assert result["iterations_used"] == 1
     assert "verify" in result["artifacts"]
+
+
+def test_orchestrator_initializes_tool_context_with_detected_windows_os() -> None:
+    orchestrator = RepairOrchestrator(llm_adapter=StubMainLLMAdapter([AgentTurn(kind="final", content="FAILED")]))
+
+    state = orchestrator.initialize_run(make_task_input())
+
+    assert state.tool_use_context.os_name == "windows"
 
 
 def test_orchestrator_verify_fail_verdict_ends_in_human_review() -> None:
@@ -505,7 +518,6 @@ def test_orchestrator_plan_to_explore_relies_on_main_thread_prompt_not_runtime_i
             "risk_level": "medium",
         },
         "tests_to_run": [],
-        "need_human_review": False,
     }
     fake_agent_tool = FakeAgentTool(
         {
@@ -609,7 +621,6 @@ def test_orchestrator_escalates_when_plan_requests_human_review() -> None:
                             "risk_level": "high",
                         },
                         "tests_to_run": [],
-                        "need_human_review": True,
                     },
                 )
             ]
@@ -619,6 +630,274 @@ def test_orchestrator_escalates_when_plan_requests_human_review() -> None:
     result = run(make_task_input(), llm_adapter=main_adapter, agent_tool=fake_agent_tool)
 
     assert result["final_status"] == "NEED_HUMAN_REVIEW"
+
+
+def test_orchestrator_plan_fallback_allows_continue_when_summary_matches_explore_context() -> None:
+    main_adapter = StubMainLLMAdapter(
+        [
+            AgentTurn(
+                kind="tool",
+                content="Inspect first",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "description": "Traceback review", "prompt": "Investigate traceback"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Generate a plan",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "description": "Plan repair", "prompt": "Create a repair plan"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Execute the patch",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "execute", "description": "Apply patch", "prompt": "Apply the planned fix"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Verify the patch",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "verify", "description": "Verify patch", "prompt": "Verify and return PASS if successful"}),
+            ),
+            AgentTurn(kind="final", content="READY_FOR_PR: verification passed"),
+        ]
+    )
+    fake_agent_tool = FakeAgentTool(
+        {
+            "explore": [
+                make_agent_result(
+                    agent_type="explore",
+                    summary="Located bug in calculator.py and app.py",
+                    output=make_explore_output(
+                        suspect_files=[
+                            r"E:\projeccts\demo-web-service-repo\demo_service\calculator.py",
+                            r"E:\projeccts\demo-web-service-repo\demo_service\app.py",
+                        ],
+                        code_snippets=[
+                            {"tool": "read_code", "content": "divide_numbers in calculator.py returns a / b"},
+                            {"tool": "read_code", "content": "app.py divide endpoint catches Exception and returns 500"},
+                        ],
+                    ),
+                )
+            ],
+            "plan": [
+                make_agent_result(
+                    agent_type="plan",
+                    summary=(
+                        "Modify E:\\projeccts\\demo-web-service-repo\\demo_service\\calculator.py "
+                        "to add a zero divisor guard, and update app.py to catch ValueError and return 400."
+                    ),
+                    output=make_plan_output(files_to_modify=[], evidence=[]),
+                )
+            ],
+            "execute": [
+                make_agent_result(
+                    agent_type="execute",
+                    summary="Patch applied successfully",
+                    output=make_execute_output(),
+                )
+            ],
+            "verify": [
+                make_agent_result(
+                    agent_type="verify",
+                    summary="VERDICT: PASS",
+                    output={
+                        "verification_result": {
+                            "verdict": "PASS",
+                            "targeted_tests_passed": True,
+                            "smoke_tests_passed": True,
+                            "failed_tests": [],
+                            "failure_logs": [],
+                            "ready_for_pr": True,
+                        }
+                    },
+                )
+            ],
+        }
+    )
+
+    result = run(make_task_input(), llm_adapter=main_adapter, agent_tool=fake_agent_tool)
+
+    assert result["final_status"] == "READY_FOR_PR"
+    assert result["artifacts"]["plan"]["fallback_used"] is True
+    assert result["artifacts"]["plan"]["fallback_reason"] == "fallback_from_plan_summary_and_explore_context"
+    assert result["artifacts"]["plan"]["output"]["repair_plan"]["files_to_modify"] == [
+        r"E:\projeccts\demo-web-service-repo\demo_service\calculator.py",
+        r"E:\projeccts\demo-web-service-repo\demo_service\app.py",
+    ]
+    assert result["artifacts"]["plan"]["output"]["root_cause_analysis"]["evidence"]
+
+
+def test_orchestrator_plan_fallback_blocks_when_summary_files_are_outside_explore_context() -> None:
+    main_adapter = StubMainLLMAdapter(
+        [
+            AgentTurn(
+                kind="tool",
+                content="Inspect first",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "description": "Traceback review", "prompt": "Investigate traceback"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Generate a plan",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "description": "Plan repair", "prompt": "Create a repair plan"}),
+            ),
+        ]
+    )
+    fake_agent_tool = FakeAgentTool(
+        {
+            "explore": [
+                make_agent_result(
+                    agent_type="explore",
+                    summary="Located bug in app.py",
+                    output=make_explore_output(
+                        suspect_files=[r"E:\projeccts\demo-web-service-repo\demo_service\app.py"],
+                        code_snippets=[{"tool": "read_code", "content": "app.py divide endpoint catches Exception and returns 500"}],
+                    ),
+                )
+            ],
+            "plan": [
+                make_agent_result(
+                    agent_type="plan",
+                    summary="Modify service.py to add a zero divisor guard.",
+                    output=make_plan_output(files_to_modify=[], evidence=[]),
+                )
+            ],
+        }
+    )
+
+    result = run(make_task_input(), llm_adapter=main_adapter, agent_tool=fake_agent_tool)
+
+    assert result["final_status"] == "NEED_HUMAN_REVIEW"
+    assert result["artifacts"]["plan"]["fallback_used"] is True
+    assert result["artifacts"]["plan"]["fallback_reason"] == "fallback_blocked_no_actionable_file_match"
+
+
+def test_orchestrator_plan_fallback_blocks_when_summary_lacks_clear_action() -> None:
+    main_adapter = StubMainLLMAdapter(
+        [
+            AgentTurn(
+                kind="tool",
+                content="Inspect first",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "description": "Traceback review", "prompt": "Investigate traceback"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Generate a plan",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "description": "Plan repair", "prompt": "Create a repair plan"}),
+            ),
+        ]
+    )
+    fake_agent_tool = FakeAgentTool(
+        {
+            "explore": [
+                make_agent_result(
+                    agent_type="explore",
+                    summary="Located bug in app.py",
+                    output=make_explore_output(
+                        suspect_files=[r"E:\projeccts\demo-web-service-repo\demo_service\app.py"],
+                        code_snippets=[{"tool": "read_code", "content": "app.py divide endpoint catches Exception and returns 500"}],
+                    ),
+                )
+            ],
+            "plan": [
+                make_agent_result(
+                    agent_type="plan",
+                    summary="The issue likely involves app.py and may require further analysis before a final conclusion.",
+                    output=make_plan_output(files_to_modify=[], evidence=[]),
+                )
+            ],
+        }
+    )
+
+    result = run(make_task_input(), llm_adapter=main_adapter, agent_tool=fake_agent_tool)
+
+    assert result["final_status"] == "NEED_HUMAN_REVIEW"
+    assert result["artifacts"]["plan"]["fallback_used"] is True
+    assert result["artifacts"]["plan"]["fallback_reason"] == "fallback_blocked_summary_lacks_clear_action"
+
+
+def test_orchestrator_stops_before_plan_when_explore_context_is_insufficient() -> None:
+    main_adapter = StubMainLLMAdapter(
+        [
+            AgentTurn(
+                kind="tool",
+                content="Inspect first",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "description": "Traceback review", "prompt": "Investigate traceback"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Generate a plan",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "description": "Plan repair", "prompt": "Create a repair plan"}),
+            ),
+        ]
+    )
+    fake_agent_tool = FakeAgentTool(
+        {
+            "explore": [
+                make_agent_result(
+                    agent_type="explore",
+                    summary="Could not locate enough evidence",
+                    output=make_explore_output(
+                        suspect_files=[],
+                        code_snippets=[],
+                        context_completeness="insufficient",
+                    ),
+                )
+            ],
+            "plan": [
+                make_agent_result(
+                    agent_type="plan",
+                    summary="Modify app.py to catch ValueError and return 400.",
+                    output=make_plan_output(files_to_modify=[], evidence=[]),
+                )
+            ],
+        }
+    )
+
+    result = run(make_task_input(), llm_adapter=main_adapter, agent_tool=fake_agent_tool)
+
+    assert result["final_status"] == "NEED_HUMAN_REVIEW"
+    assert "plan" not in result["artifacts"]
+
+
+def test_orchestrator_plan_fallback_blocks_on_high_risk_plan() -> None:
+    main_adapter = StubMainLLMAdapter(
+        [
+            AgentTurn(
+                kind="tool",
+                content="Inspect first",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "description": "Traceback review", "prompt": "Investigate traceback"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Generate a plan",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "description": "Plan repair", "prompt": "Create a repair plan"}),
+            ),
+        ]
+    )
+    fake_agent_tool = FakeAgentTool(
+        {
+            "explore": [
+                make_agent_result(
+                    agent_type="explore",
+                    summary="Located bug in app.py",
+                    output=make_explore_output(
+                        suspect_files=[r"E:\projeccts\demo-web-service-repo\demo_service\app.py"],
+                        code_snippets=[{"tool": "read_code", "content": "app.py divide endpoint catches Exception and returns 500"}],
+                    ),
+                )
+            ],
+            "plan": [
+                make_agent_result(
+                    agent_type="plan",
+                    summary="Modify app.py to catch ValueError and return 400.",
+                    output=make_plan_output(files_to_modify=[], evidence=[], risk_level="high"),
+                )
+            ],
+        }
+    )
+
+    result = run(make_task_input(), llm_adapter=main_adapter, agent_tool=fake_agent_tool)
+
+    assert result["final_status"] == "NEED_HUMAN_REVIEW"
+    assert result["artifacts"]["plan"]["fallback_used"] is True
+    assert result["artifacts"]["plan"]["fallback_reason"] == "fallback_blocked_high_risk_plan"
 
 
 def test_orchestrator_escalates_when_execute_needs_replan() -> None:

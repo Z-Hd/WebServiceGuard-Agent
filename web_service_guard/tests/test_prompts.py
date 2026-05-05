@@ -46,7 +46,7 @@ def test_orchestrator_initial_messages_include_bug_event_and_traceback() -> None
     messages = build_orchestrator_initial_messages(
         {
             "run_id": "run-001",
-            "repo": "demo-repo",
+            "repo_root": "demo-repo",
             "branch": "main",
             "max_iterations": 3,
             "bug_event": {"service": "demo", "error": "ValueError"},
