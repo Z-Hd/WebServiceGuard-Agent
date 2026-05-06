@@ -5,7 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from web_service_guard.delivery.developer_profile_service import DeveloperProfileService
 from web_service_guard.delivery.git_delivery import GitDelivery
+from web_service_guard.delivery.notification_personalizer import NotificationPersonalizer
 from web_service_guard.delivery.notify_service import NotifyService
 from web_service_guard.delivery.pr_service import PRService
 from web_service_guard.errors import (
@@ -42,10 +44,14 @@ class DeliveryService:
         git_delivery: GitDelivery | None = None,
         pr_service: PRService | None = None,
         notify_service: NotifyService | None = None,
+        developer_profile_service: DeveloperProfileService | None = None,
+        notification_personalizer: NotificationPersonalizer | None = None,
     ) -> None:
         self._git_delivery = git_delivery or GitDelivery()
         self._pr_service = pr_service or PRService()
         self._notify_service = notify_service or NotifyService()
+        self._developer_profile_service = developer_profile_service or DeveloperProfileService()
+        self._notification_personalizer = notification_personalizer or NotificationPersonalizer()
 
     def run(
         self,
@@ -160,10 +166,26 @@ class DeliveryService:
         status = "SUCCESS"
         summary = "PR created and notification delivered."
         if request.notification_enabled:
+            profile_resolution = self._developer_profile_service.resolve_profile(
+                prepared_task=request.prepared_task,
+                repair_result=request.repair_result,
+            )
+            personalization = self._notification_personalizer.personalize(
+                prepared_task=request.prepared_task,
+                repair_result=request.repair_result,
+                pr_result=pr_result,
+                profile_resolution=profile_resolution,
+            )
+            artifacts["notification_personalization"] = {
+                "profile_resolution": profile_resolution.to_dict(),
+                "personalization_result": personalization.to_dict(),
+                "message_preview": None if not personalization.text else personalization.text[:500],
+            }
             notification = self._notify_service.send_notification(
                 prepared_task=request.prepared_task,
                 repair_result=request.repair_result,
                 pr_result=pr_result,
+                notification_text=personalization.text if personalization.success else None,
             )
             if not notification.get("sent"):
                 status = "PARTIAL"

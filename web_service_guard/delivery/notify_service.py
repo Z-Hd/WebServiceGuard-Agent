@@ -19,11 +19,13 @@ class NotifyService:
         prepared_task: Any,
         repair_result: dict[str, Any],
         pr_result: dict[str, Any],
+        notification_text: str | None = None,
     ) -> dict[str, Any]:
         payload = self.build_payload(
             prepared_task=prepared_task,
             repair_result=repair_result,
             pr_result=pr_result,
+            notification_text=notification_text,
         )
         response = self._feishu_client.send_webhook(payload)
         response.update(
@@ -40,6 +42,7 @@ class NotifyService:
         prepared_task: Any,
         repair_result: dict[str, Any],
         pr_result: dict[str, Any],
+        notification_text: str | None = None,
     ) -> dict[str, Any]:
         bug_event = _extract_bug_event(prepared_task)
         artifacts = repair_result.get("artifacts", {})
@@ -50,7 +53,7 @@ class NotifyService:
         verdict = verification.get("verdict") or "UNKNOWN"
         pr_url = pr_result.get("url") or "(PR URL unavailable)"
 
-        markdown = (
+        markdown = notification_text or (
             f"**Auto-fix ready for review**\n"
             f"- Service: {bug_event.get('service', 'unknown')}\n"
             f"- Summary: {bug_event.get('error_summary', 'unknown incident')}\n"
