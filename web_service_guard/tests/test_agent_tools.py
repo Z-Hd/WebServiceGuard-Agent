@@ -71,7 +71,7 @@ def test_builtin_agents_expose_expanded_contract() -> None:
     assert explore.read_only is True
     assert explore.max_turns is None
     plan = BUILTIN_AGENTS["plan"]
-    assert plan.tools == ["read", "grep", "glob"]
+    assert plan.tools == ["read", "grep", "glob", "bash"]
     assert plan.permission_mode == "plan"
     assert plan.read_only is True
     verify = BUILTIN_AGENTS["verify"]
@@ -338,7 +338,6 @@ def test_verify_agent_tool_emits_stable_verification_result() -> None:
     assert verification["ready_for_pr"] is False
     assert verification["targeted_tests_passed"] is False
     assert verification["smoke_tests_passed"] is False
-    assert verification["verification_report"] if False else True
     assert result.summary == "VERDICT: FAIL"
 
 
@@ -524,22 +523,43 @@ def test_verify_agent_allows_later_successful_validation_to_override_environment
                 content="Run direct test file",
                 tool_call=ToolCall(
                     name="bash",
-                    arguments={"command": 'python3 -c "print(123)"'},
+                    arguments={"command": "python3 tests/test_prompts.py"},
                 ),
             ),
-            AgentTurn(kind="final", content="VERDICT: PASS"),
+            AgentTurn(
+                kind="final",
+                content=(
+                    "### Check: original traceback path\n"
+                    "**Command run:**\n"
+                    "  python3 tests/test_prompts.py\n"
+                    "**Output observed:**\n"
+                    "  OK\n"
+                    "**Result: PASS**\n\n"
+                    "### Check: regression probe\n"
+                    "**Command run:**\n"
+                    "  python3 tests/test_prompts.py\n"
+                    "**Output observed:**\n"
+                    "  OK\n"
+                    "**Result: PASS**\n\n"
+                    "Verified the original traceback path is fixed and a regression probe still passes.\n"
+                    "VERDICT: PASS"
+                ),
+            ),
         ]
     )
     tool = AgentTool(llm_adapter=adapter, tool_registry=registry)
 
-    result = tool.execute(agent_type="verify", user_prompt="Verify the patch")
+    result = tool.execute(
+        agent_type="verify",
+        user_prompt="Verify the traceback path and rerun tests/test_prompts.py with a regression probe.",
+    )
 
     verification = result.output["verification_result"]
     assert verification["verdict"] == "PASS"
     assert verification["targeted_tests_passed"] is True
     assert verification["ready_for_pr"] is True
     assert verification["environment_limitations"]
-    assert verification["successful_checks"] == ['python3 -c "print(123)"']
+    assert verification["successful_checks"] == ["python3 tests/test_prompts.py"]
 
 
 def test_verify_agent_returns_partial_for_environment_only_failures() -> None:
@@ -587,10 +607,11 @@ def test_verify_agent_preserves_full_verification_report_in_output() -> None:
     assert result.summary == "VERDICT: PASS"
     assert result.output["verification_report"] == full_report
     assert result.output["verification_result"]["verdict"] == "PASS"
+    assert result.output["verification_result"]["ready_for_pr"] is True
 
 
 def test_plan_agent_tool_emits_stable_plan_output() -> None:
-    registry = make_registry(FileReadTool(), GrepTool(), GlobTool())
+    registry = make_registry(FileReadTool(), GrepTool(), GlobTool(), BashTool())
     file_path = Path(__file__).resolve()
     adapter = StubLLMAdapter(
         [

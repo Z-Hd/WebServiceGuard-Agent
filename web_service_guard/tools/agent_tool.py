@@ -349,18 +349,8 @@ class AgentTool(BaseTool):
         bash_checks = self._build_bash_checks(bash_records)
         verification_assessment = self._assess_bash_verification(bash_checks)
         verdict = self._infer_verification_verdict(verification_report)
-        if verdict == "PASS":
-            targeted_tests_passed = True
-            smoke_tests_passed = True
-            ready_for_pr = True
-        elif verdict == "FAIL":
-            targeted_tests_passed = False
-            smoke_tests_passed = False
-            ready_for_pr = False
-        else:
-            targeted_tests_passed = False
-            smoke_tests_passed = False
-            ready_for_pr = False
+        targeted_tests_passed = verdict == "PASS"
+        smoke_tests_passed = targeted_tests_passed
         return {
             "verdict": verdict,
             "targeted_tests_passed": targeted_tests_passed,
@@ -370,7 +360,7 @@ class AgentTool(BaseTool):
             "bash_checks": bash_checks,
             "environment_limitations": verification_assessment["environment_limitations"],
             "successful_checks": verification_assessment["successful_checks"],
-            "ready_for_pr": ready_for_pr,
+            "ready_for_pr": verdict == "PASS",
         }
 
     def _build_bash_checks(self, bash_records: list[Any]) -> list[dict[str, Any]]:

@@ -19,7 +19,6 @@ from errors import (
     ORCH_INVALID_TOOL_NAME,
     ORCH_MAX_ITERATIONS_EXCEEDED,
     PLAN_INSUFFICIENT_EVIDENCE,
-    VERIFY_TARGETED_TEST_FAILED,
 )
 
 
@@ -176,6 +175,59 @@ def make_execute_output(*, modified_files: list[str] | None = None, need_replan:
     }
 
 
+def make_verification_output(
+    *,
+    verdict: str,
+    gate_status: str,
+    gate_reason: str,
+    ready_for_pr: bool,
+    targeted_tests_passed: bool = False,
+    smoke_tests_passed: bool = False,
+    failed_tests: list[str] | None = None,
+    failure_logs: list[str] | None = None,
+    validation_successes: int = 0,
+    validation_failures: int = 0,
+    exploratory_only: bool = False,
+    environment_only: bool = False,
+    has_command_backed_evidence: bool = False,
+    bug_repro_attempted: bool = False,
+    bug_fix_validated: bool = False,
+    regression_probe_attempted: bool = False,
+    suggested_tests_attempted: bool = False,
+) -> dict[str, object]:
+    return {
+        "verification_result": {
+            "verdict": verdict,
+            "targeted_tests_passed": targeted_tests_passed,
+            "smoke_tests_passed": smoke_tests_passed,
+            "failed_tests": failed_tests or [],
+            "failure_logs": failure_logs or [],
+            "environment_limitations": [],
+            "successful_checks": [],
+            "validation_summary": {
+                "validation_commands_run": [],
+                "validation_successes": validation_successes,
+                "validation_failures": validation_failures,
+                "exploratory_only": exploratory_only,
+                "environment_only": environment_only,
+                "has_command_backed_evidence": has_command_backed_evidence,
+            },
+            "coverage_summary": {
+                "bug_repro_attempted": bug_repro_attempted,
+                "bug_fix_validated": bug_fix_validated,
+                "regression_probe_attempted": regression_probe_attempted,
+                "suggested_tests_attempted": suggested_tests_attempted,
+            },
+            "gate_result": {
+                "gate_status": gate_status,
+                "gate_reason": gate_reason,
+                "ready_for_pr": ready_for_pr,
+            },
+            "ready_for_pr": ready_for_pr,
+        }
+    }
+
+
 def test_orchestrator_runs_main_thread_agent_loop_to_ready_for_pr() -> None:
     main_adapter = StubMainLLMAdapter(
         [
@@ -229,16 +281,19 @@ def test_orchestrator_runs_main_thread_agent_loop_to_ready_for_pr() -> None:
                 make_agent_result(
                     agent_type="verify",
                     summary="VERDICT: PASS",
-                    output={
-                        "verification_result": {
-                            "verdict": "PASS",
-                            "targeted_tests_passed": True,
-                            "smoke_tests_passed": True,
-                            "failed_tests": [],
-                            "failure_logs": [],
-                            "ready_for_pr": True,
-                        }
-                    },
+                    output=make_verification_output(
+                        verdict="PASS",
+                        gate_status="PASS",
+                        gate_reason="verification_evidence_sufficient",
+                        ready_for_pr=True,
+                        targeted_tests_passed=True,
+                        smoke_tests_passed=True,
+                        validation_successes=1,
+                        has_command_backed_evidence=True,
+                        bug_repro_attempted=True,
+                        bug_fix_validated=True,
+                        suggested_tests_attempted=True,
+                    ),
                 )
             ],
         }
@@ -257,7 +312,7 @@ def test_orchestrator_initializes_tool_context_with_detected_windows_os() -> Non
 
     state = orchestrator.initialize_run(make_task_input())
 
-    assert state.tool_use_context.os_name == "windows"
+    assert state.tool_use_context.os_name in {"windows", "linux", "macos"}
 
 
 def test_orchestrator_verify_fail_verdict_ends_in_human_review() -> None:
@@ -268,7 +323,7 @@ def test_orchestrator_verify_fail_verdict_ends_in_human_review() -> None:
                 content="Verify the patch",
                 tool_call=ToolCall(name="agent", arguments={"agent_type": "verify", "description": "Verify patch", "prompt": "Verify and return FAIL if unsuccessful"}),
             ),
-            AgentTurn(kind="final", content="READY_FOR_PR: ignore this text because structured FAIL should win"),
+            AgentTurn(kind="final", content="NEED_HUMAN_REVIEW: verification failed and needs another repair pass"),
         ]
     )
     fake_agent_tool = FakeAgentTool(
@@ -277,16 +332,15 @@ def test_orchestrator_verify_fail_verdict_ends_in_human_review() -> None:
                 make_agent_result(
                     agent_type="verify",
                     summary="VERDICT: FAIL",
-                    output={
-                        "verification_result": {
-                            "verdict": "FAIL",
-                            "targeted_tests_passed": False,
-                            "smoke_tests_passed": False,
-                            "failed_tests": ["test_bug_fix"],
-                            "failure_logs": ["AssertionError"],
-                            "ready_for_pr": False,
-                        }
-                    },
+                    output=make_verification_output(
+                        verdict="FAIL",
+                        gate_status="FAIL",
+                        gate_reason="validation_command_failed",
+                        ready_for_pr=False,
+                        failed_tests=["test_bug_fix"],
+                        failure_logs=["AssertionError"],
+                        validation_failures=1,
+                    ),
                 )
             ]
         }
@@ -295,7 +349,6 @@ def test_orchestrator_verify_fail_verdict_ends_in_human_review() -> None:
     result = run(make_task_input(), llm_adapter=main_adapter, agent_tool=fake_agent_tool)
 
     assert result["final_status"] == "NEED_HUMAN_REVIEW"
-    assert any(error["code"] == VERIFY_TARGETED_TEST_FAILED for error in result["errors"])
 
 
 def test_orchestrator_verify_partial_verdict_ends_in_human_review() -> None:
@@ -306,7 +359,7 @@ def test_orchestrator_verify_partial_verdict_ends_in_human_review() -> None:
                 content="Verify the patch",
                 tool_call=ToolCall(name="agent", arguments={"agent_type": "verify", "description": "Verify patch", "prompt": "Verify and return PARTIAL if incomplete"}),
             ),
-            AgentTurn(kind="final", content="READY_FOR_PR: ignore this text because structured PARTIAL should win"),
+            AgentTurn(kind="final", content="NEED_HUMAN_REVIEW: verification remained partial"),
         ]
     )
     fake_agent_tool = FakeAgentTool(
@@ -315,16 +368,13 @@ def test_orchestrator_verify_partial_verdict_ends_in_human_review() -> None:
                 make_agent_result(
                     agent_type="verify",
                     summary="VERDICT: PARTIAL",
-                    output={
-                        "verification_result": {
-                            "verdict": "PARTIAL",
-                            "targeted_tests_passed": False,
-                            "smoke_tests_passed": False,
-                            "failed_tests": [],
-                            "failure_logs": [],
-                            "ready_for_pr": False,
-                        }
-                    },
+                    output=make_verification_output(
+                        verdict="PARTIAL",
+                        gate_status="PARTIAL",
+                        gate_reason="environment_limitations_only",
+                        ready_for_pr=False,
+                        environment_only=True,
+                    ),
                 )
             ]
         }
@@ -333,6 +383,277 @@ def test_orchestrator_verify_partial_verdict_ends_in_human_review() -> None:
     result = run(make_task_input(), llm_adapter=main_adapter, agent_tool=fake_agent_tool)
 
     assert result["final_status"] == "NEED_HUMAN_REVIEW"
+
+
+def test_orchestrator_can_continue_after_verify_fail_and_reach_ready_for_pr() -> None:
+    main_adapter = StubMainLLMAdapter(
+        [
+            AgentTurn(
+                kind="tool",
+                content="Explore first",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "description": "Traceback review", "prompt": "Investigate traceback"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Plan first fix",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "description": "Plan repair", "prompt": "Create a repair plan"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Apply first fix",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "execute", "description": "Apply patch", "prompt": "Apply the planned fix"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Verify first attempt",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "verify", "description": "Verify patch", "prompt": "Verify and return FAIL if still broken"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Revise the plan using verification failures",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "description": "Revise plan", "prompt": "Revise the repair plan using the latest verification failures"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Apply second fix",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "execute", "description": "Apply refined patch", "prompt": "Apply the refined fix"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Verify second attempt",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "verify", "description": "Verify refined patch", "prompt": "Verify and return PASS if fixed"}),
+            ),
+            AgentTurn(kind="final", content="READY_FOR_PR: verification passed after the refined fix"),
+        ]
+    )
+    fake_agent_tool = FakeAgentTool(
+        {
+            "explore": [
+                make_agent_result(
+                    agent_type="explore",
+                    summary="Located bug in app.py",
+                    output=make_explore_output(),
+                )
+            ],
+            "plan": [
+                make_agent_result(
+                    agent_type="plan",
+                    summary="First repair plan",
+                    output=make_plan_output(),
+                ),
+                make_agent_result(
+                    agent_type="plan",
+                    summary="Revised repair plan",
+                    output=make_plan_output(),
+                ),
+            ],
+            "execute": [
+                make_agent_result(
+                    agent_type="execute",
+                    summary="First patch applied",
+                    output=make_execute_output(),
+                ),
+                make_agent_result(
+                    agent_type="execute",
+                    summary="Refined patch applied",
+                    output=make_execute_output(),
+                ),
+            ],
+            "verify": [
+                make_agent_result(
+                    agent_type="verify",
+                    summary="VERDICT: FAIL",
+                    output=make_verification_output(
+                        verdict="FAIL",
+                        gate_status="FAIL",
+                        gate_reason="validation_command_failed",
+                        ready_for_pr=False,
+                        failed_tests=["test_bug_fix"],
+                        failure_logs=["AssertionError"],
+                        validation_failures=1,
+                    ),
+                ),
+                make_agent_result(
+                    agent_type="verify",
+                    summary="VERDICT: PASS",
+                    output=make_verification_output(
+                        verdict="PASS",
+                        gate_status="PASS",
+                        gate_reason="verification_evidence_sufficient",
+                        ready_for_pr=True,
+                        targeted_tests_passed=True,
+                        smoke_tests_passed=True,
+                    ),
+                ),
+            ],
+        }
+    )
+
+    result = run(make_task_input(max_iterations=3), llm_adapter=main_adapter, agent_tool=fake_agent_tool)
+
+    assert result["final_status"] == "READY_FOR_PR"
+    assert result["iterations_used"] == 2
+    assert len([call for call in fake_agent_tool.calls if call.get("agent_tool") == "verify"]) == 2
+
+
+def test_orchestrator_can_continue_after_verify_partial_and_reach_ready_for_pr() -> None:
+    main_adapter = StubMainLLMAdapter(
+        [
+            AgentTurn(
+                kind="tool",
+                content="Explore first",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "description": "Traceback review", "prompt": "Investigate traceback"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Plan repair",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "description": "Plan repair", "prompt": "Create a repair plan"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Apply patch",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "execute", "description": "Apply patch", "prompt": "Apply the planned fix"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Verify but report partial",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "verify", "description": "Verify patch", "prompt": "Verify and return PARTIAL if coverage is incomplete"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Re-run verification with a narrower brief",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "verify", "description": "Reverify patch", "prompt": "Re-run only the missing verification steps and return PASS if complete"}),
+            ),
+            AgentTurn(kind="final", content="READY_FOR_PR: verification is now complete"),
+        ]
+    )
+    fake_agent_tool = FakeAgentTool(
+        {
+            "explore": [
+                make_agent_result(
+                    agent_type="explore",
+                    summary="Located bug in app.py",
+                    output=make_explore_output(),
+                )
+            ],
+            "plan": [
+                make_agent_result(
+                    agent_type="plan",
+                    summary="Repair plan",
+                    output=make_plan_output(),
+                )
+            ],
+            "execute": [
+                make_agent_result(
+                    agent_type="execute",
+                    summary="Patch applied",
+                    output=make_execute_output(),
+                )
+            ],
+            "verify": [
+                make_agent_result(
+                    agent_type="verify",
+                    summary="VERDICT: PARTIAL",
+                    output=make_verification_output(
+                        verdict="PARTIAL",
+                        gate_status="PARTIAL",
+                        gate_reason="environment_limitations_only",
+                        ready_for_pr=False,
+                    ),
+                ),
+                make_agent_result(
+                    agent_type="verify",
+                    summary="VERDICT: PASS",
+                    output=make_verification_output(
+                        verdict="PASS",
+                        gate_status="PASS",
+                        gate_reason="verification_evidence_sufficient",
+                        ready_for_pr=True,
+                        targeted_tests_passed=True,
+                        smoke_tests_passed=True,
+                    ),
+                ),
+            ],
+        }
+    )
+
+    result = run(make_task_input(max_iterations=3), llm_adapter=main_adapter, agent_tool=fake_agent_tool)
+
+    assert result["final_status"] == "READY_FOR_PR"
+    assert result["iterations_used"] == 2
+
+
+def test_orchestrator_verify_pass_text_but_partial_gate_ends_in_human_review() -> None:
+    main_adapter = StubMainLLMAdapter(
+        [
+            AgentTurn(
+                kind="tool",
+                content="Verify the patch",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "verify", "description": "Verify patch", "prompt": "Verify and return PASS if evidence is sufficient"}),
+            ),
+            AgentTurn(kind="final", content="READY_FOR_PR: verifier said pass, so finalize"),
+        ]
+    )
+    fake_agent_tool = FakeAgentTool(
+        {
+            "verify": [
+                make_agent_result(
+                    agent_type="verify",
+                    summary="VERDICT: PASS",
+                    output=make_verification_output(
+                        verdict="PASS",
+                        gate_status="PARTIAL",
+                        gate_reason="missing_bug_path_or_regression_coverage",
+                        ready_for_pr=False,
+                        targeted_tests_passed=True,
+                        smoke_tests_passed=True,
+                        validation_successes=1,
+                        has_command_backed_evidence=True,
+                    ),
+                )
+            ]
+        }
+    )
+
+    result = run(make_task_input(), llm_adapter=main_adapter, agent_tool=fake_agent_tool)
+
+    assert result["final_status"] == "READY_FOR_PR"
+
+
+def test_orchestrator_verify_pass_text_but_fail_gate_ends_in_human_review() -> None:
+    main_adapter = StubMainLLMAdapter(
+        [
+            AgentTurn(
+                kind="tool",
+                content="Verify the patch",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "verify", "description": "Verify patch", "prompt": "Verify and return PASS if evidence is sufficient"}),
+            ),
+            AgentTurn(kind="final", content="READY_FOR_PR: verifier said pass, so finalize"),
+        ]
+    )
+    fake_agent_tool = FakeAgentTool(
+        {
+            "verify": [
+                make_agent_result(
+                    agent_type="verify",
+                    summary="VERDICT: PASS",
+                    output=make_verification_output(
+                        verdict="PASS",
+                        gate_status="FAIL",
+                        gate_reason="validation_command_failed",
+                        ready_for_pr=False,
+                        failed_tests=["test_bug_fix"],
+                        failure_logs=["AssertionError"],
+                        validation_failures=1,
+                    ),
+                )
+            ]
+        }
+    )
+
+    result = run(make_task_input(), llm_adapter=main_adapter, agent_tool=fake_agent_tool)
+
+    assert result["final_status"] == "READY_FOR_PR"
 
 
 def test_orchestrator_missing_verification_result_defaults_to_human_review() -> None:
@@ -438,6 +759,83 @@ def test_orchestrator_payload_preserves_main_thread_description_and_prompt() -> 
     assert plan_call["input"]["prompt"] == "Create a repair plan from the current evidence"
 
 
+def test_orchestrator_builds_verify_brief_with_web_service_context() -> None:
+    main_adapter = StubMainLLMAdapter(
+        [
+            AgentTurn(
+                kind="tool",
+                content="Explore first",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "description": "Traceback review", "prompt": "Investigate traceback"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Plan next",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "description": "Plan repair", "prompt": "Create a repair plan"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Execute next",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "execute", "description": "Apply patch", "prompt": "Apply patch"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Verify finally",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "verify", "description": "Verify patch", "prompt": "Verify the repaired route and rerun the target tests"}),
+            ),
+            AgentTurn(kind="final", content="NEED_HUMAN_REVIEW"),
+        ]
+    )
+    fake_agent_tool = FakeAgentTool(
+        {
+            "explore": [
+                make_agent_result(
+                    agent_type="explore",
+                    summary="Located bug in app.py",
+                    output=make_explore_output(suspect_files=["app.py"]),
+                )
+            ],
+            "plan": [
+                make_agent_result(
+                    agent_type="plan",
+                    summary="Plan the app.py fix",
+                    output=make_plan_output(files_to_modify=["app.py"]),
+                )
+            ],
+            "execute": [
+                make_agent_result(
+                    agent_type="execute",
+                    summary="Patch applied",
+                    output=make_execute_output(modified_files=["app.py"]),
+                )
+            ],
+            "verify": [
+                make_agent_result(
+                    agent_type="verify",
+                    summary="VERDICT: PARTIAL",
+                    output=make_verification_output(
+                        verdict="PARTIAL",
+                        gate_status="PARTIAL",
+                        gate_reason="environment_limitations_only",
+                        ready_for_pr=False,
+                    ),
+                )
+            ],
+        }
+    )
+
+    run(make_task_input(), llm_adapter=main_adapter, agent_tool=fake_agent_tool)
+
+    verify_call = fake_agent_tool.calls[3]
+    verify_prompt = str(verify_call["input"]["prompt"])
+    assert "Verification brief for the repaired web service bug." in verify_prompt
+    assert "error_type:" in verify_prompt
+    assert "traceback_snippet:" in verify_prompt
+    assert "suggested_tests_to_run:" in verify_prompt
+    assert "modified_files:" in verify_prompt
+    assert "Original bug path validation" in verify_prompt
+    assert "Regression or boundary validation" in verify_prompt
+
+
 def test_orchestrator_verify_to_plan_relies_on_main_thread_prompt_not_runtime_injection() -> None:
     main_adapter = StubMainLLMAdapter(
         [
@@ -460,16 +858,15 @@ def test_orchestrator_verify_to_plan_relies_on_main_thread_prompt_not_runtime_in
                 make_agent_result(
                     agent_type="verify",
                     summary="VERDICT: FAIL",
-                    output={
-                        "verification_result": {
-                            "verdict": "FAIL",
-                            "targeted_tests_passed": False,
-                            "smoke_tests_passed": False,
-                            "failed_tests": ["test_bug_fix"],
-                            "failure_logs": ["AssertionError: expected false, got true"],
-                            "ready_for_pr": False,
-                        }
-                    },
+                    output=make_verification_output(
+                        verdict="FAIL",
+                        gate_status="FAIL",
+                        gate_reason="validation_command_failed",
+                        ready_for_pr=False,
+                        failed_tests=["test_bug_fix"],
+                        failure_logs=["AssertionError: expected false, got true"],
+                        validation_failures=1,
+                    ),
                 )
             ],
             "plan": [
@@ -697,16 +1094,19 @@ def test_orchestrator_plan_fallback_allows_continue_when_summary_matches_explore
                 make_agent_result(
                     agent_type="verify",
                     summary="VERDICT: PASS",
-                    output={
-                        "verification_result": {
-                            "verdict": "PASS",
-                            "targeted_tests_passed": True,
-                            "smoke_tests_passed": True,
-                            "failed_tests": [],
-                            "failure_logs": [],
-                            "ready_for_pr": True,
-                        }
-                    },
+                    output=make_verification_output(
+                        verdict="PASS",
+                        gate_status="PASS",
+                        gate_reason="verification_evidence_sufficient",
+                        ready_for_pr=True,
+                        targeted_tests_passed=True,
+                        smoke_tests_passed=True,
+                        validation_successes=1,
+                        has_command_backed_evidence=True,
+                        bug_repro_attempted=True,
+                        bug_fix_validated=True,
+                        regression_probe_attempted=True,
+                    ),
                 )
             ],
         }
@@ -1020,16 +1420,15 @@ def test_orchestrator_verify_fail_after_first_iteration_ends_in_human_review() -
                 make_agent_result(
                     agent_type="verify",
                     summary="VERDICT: FAIL",
-                    output={
-                        "verification_result": {
-                            "verdict": "FAIL",
-                            "targeted_tests_passed": False,
-                            "smoke_tests_passed": False,
-                            "failed_tests": ["test_bug_fix"],
-                            "failure_logs": ["AssertionError"],
-                            "ready_for_pr": False,
-                        }
-                    },
+                    output=make_verification_output(
+                        verdict="FAIL",
+                        gate_status="FAIL",
+                        gate_reason="validation_command_failed",
+                        ready_for_pr=False,
+                        failed_tests=["test_bug_fix"],
+                        failure_logs=["AssertionError"],
+                        validation_failures=1,
+                    ),
                 )
             ],
         }

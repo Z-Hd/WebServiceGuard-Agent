@@ -40,6 +40,9 @@ def test_orchestrator_system_prompt_mentions_agent_only_coordination() -> None:
     assert "Repair Orchestrator" in prompt
     assert "using only the `agent` tool" in prompt
     assert "READY_FOR_PR" in prompt
+    assert "First absorb the full `verification_report`" in prompt
+    assert "If the verification report suggests the root-cause judgment was wrong or incomplete, call `explore`." in prompt
+    assert "If the verification report identifies a concrete patch problem or an obvious follow-up code change, call `execute`." in prompt
 
 
 def test_orchestrator_initial_messages_include_bug_event_and_traceback() -> None:
@@ -100,12 +103,16 @@ def test_subagent_prompts_are_exposed_from_central_module() -> None:
     assert "Perform broad refactors" in execute_prompt
     assert "Complete the implementation fully when the path is clear" in execute_prompt
     verify_prompt = build_verify_system_prompt()
-    assert "You are a verification specialist." in verify_prompt
+    assert "You are a verification specialist" in verify_prompt
     assert "=== CRITICAL: DO NOT MODIFY THE PROJECT ===" in verify_prompt
     assert f"`{BASH_TOOL_NAME}`" in verify_prompt
     assert f"`{FILE_READ_TOOL_NAME}`" in verify_prompt
     assert f"`{GREP_TOOL_NAME}`" in verify_prompt
     assert f"`{GLOB_TOOL_NAME}`" in verify_prompt
+    assert "web service bug repairs" in verify_prompt
+    assert "Reproduce the original bug path" in verify_prompt
+    assert "regression or boundary probe" in verify_prompt
+    assert "A broken build or a failing targeted validation command is a FAIL" in verify_prompt
     assert "=== RECOGNIZE YOUR OWN RATIONALIZATIONS ===" in verify_prompt
     assert "=== OUTPUT FORMAT (REQUIRED) ===" in verify_prompt
     assert "A successful primary verification command should normally trigger final reporting" in verify_prompt

@@ -24,7 +24,6 @@ from errors import (
     ORCH_MISSING_USER_PROMPT,
     PLAN_INSUFFICIENT_EVIDENCE,
     PLAN_UNACTIONABLE_REPAIR_PLAN,
-    VERIFY_TARGETED_TEST_FAILED,
     make_error,
 )
 from prompts.orchestrator import (
@@ -86,27 +85,22 @@ class RepairOrchestrator:
         max_main_turns = max(state.max_turns * 6, 6)
 
         while not state.done:
-            finalization_only_turn = False
-            if self._repair_iterations_used(state) >= state.max_turns and "verify" in state.artifacts:
-                if state.post_verify_finalization_pending:
-                    finalization_only_turn = True
-                    state.post_verify_finalization_pending = False
-                else:
-                    state.record_error(
-                        make_error(
-                            code=ORCH_MAX_ITERATIONS_EXCEEDED,
-                            message="The orchestrator reached the maximum number of repair iterations.",
-                            retryable=False,
-                            stage=state.current_stage or "ORCHESTRATOR",
-                            source="RepairOrchestrator",
-                        )
+            if self._repair_iterations_used(state) >= state.max_turns:
+                state.record_error(
+                    make_error(
+                        code=ORCH_MAX_ITERATIONS_EXCEEDED,
+                        message="The orchestrator reached the maximum number of repair iterations.",
+                        retryable=False,
+                        stage=state.current_stage or "ORCHESTRATOR",
+                        source="RepairOrchestrator",
                     )
-                    state.mark_done(
-                        final_status="NEED_HUMAN_REVIEW",
-                        exit_reason="max_iterations_reached",
-                        need_human_review=True,
-                    )
-                    break
+                )
+                state.mark_done(
+                    final_status="NEED_HUMAN_REVIEW",
+                    exit_reason="max_iterations_reached",
+                    need_human_review=True,
+                )
+                break
 
             if state.turn_count >= max_main_turns:
                 state.record_error(
@@ -128,7 +122,7 @@ class RepairOrchestrator:
             state.increment_turn()
             turn = self._llm_adapter.complete(
                 messages=state.messages,
-                tools=[] if finalization_only_turn else [self._agent_tool],
+                tools=[self._agent_tool],
                 system_prompt=self._build_system_prompt(),
                 tool_use_context=state.tool_use_context,
             )
@@ -139,22 +133,6 @@ class RepairOrchestrator:
                 break
 
             if turn.kind == "tool" and turn.tool_call:
-                if finalization_only_turn:
-                    state.record_error(
-                        make_error(
-                            code=ORCH_MAX_ITERATIONS_EXCEEDED,
-                            message="The orchestrator must finalize after the last verification instead of dispatching another agent.",
-                            retryable=False,
-                            stage=state.current_stage or "ORCHESTRATOR",
-                            source="RepairOrchestrator",
-                        )
-                    )
-                    state.mark_done(
-                        final_status="NEED_HUMAN_REVIEW",
-                        exit_reason="max_iterations_reached",
-                        need_human_review=True,
-                    )
-                    break
                 state.add_message({"role": "assistant", "content": turn.content})
                 validation_error = self._validate_main_thread_action(state, turn.tool_call)
                 if validation_error is not None:
@@ -362,10 +340,53 @@ class RepairOrchestrator:
         agent_type: str,
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
+        if agent_type == "verify":
+            return {
+                "description": str(arguments["description"]),
+                "prompt": self._build_verify_brief(state, arguments),
+            }
         return {
             "description": str(arguments["description"]),
             "prompt": str(arguments.get("prompt") or arguments["user_prompt"]),
         }
+
+    def _build_verify_brief(
+        self,
+        state: RepairRuntimeState,
+        arguments: dict[str, Any],
+    ) -> str:
+        requested_prompt = str(arguments.get("prompt") or arguments["user_prompt"])
+        bug_event = state.bug_event or {}
+        explore_output = ((state.artifacts.get("explore") or {}).get("output") or {})
+        repair_context = explore_output.get("repair_context", {})
+        plan_output = ((state.artifacts.get("plan") or {}).get("output") or {})
+        execute_output = ((state.artifacts.get("execute") or {}).get("output") or {})
+        patch_result = execute_output.get("patch_result", {})
+        verification_targets = [
+            "Original bug path validation",
+            "Targeted tests/checks validation",
+            "Regression or boundary validation",
+        ]
+        return (
+            "Verification brief for the repaired web service bug.\n"
+            f"Requested verification goal: {requested_prompt}\n"
+            f"repo_root: {state.repo_root}\n"
+            f"branch: {state.branch}\n"
+            f"error_type: {bug_event.get('error_type')}\n"
+            f"error_message: {bug_event.get('error_message')}\n"
+            f"error_summary: {bug_event.get('error_summary')}\n"
+            f"traceback_snippet: {state.traceback or bug_event.get('traceback') or ''}\n"
+            f"suspect_files: {json.dumps(explore_output.get('suspect_files', []), ensure_ascii=False)}\n"
+            f"related_context: {json.dumps(repair_context.get('code_snippets', []), ensure_ascii=False)}\n"
+            f"suggested_tests_to_run: {json.dumps(plan_output.get('tests_to_run', []), ensure_ascii=False)}\n"
+            f"modified_files: {json.dumps(patch_result.get('modified_files', []), ensure_ascii=False)}\n"
+            f"patch_summary: {json.dumps(patch_result.get('patch_summary', []), ensure_ascii=False)}\n"
+            "Verification targets:\n"
+            f"- {verification_targets[0]}: reproduce the original traceback path when possible and confirm the failure no longer occurs.\n"
+            f"- {verification_targets[1]}: run the most relevant tests or command-backed checks for the repaired code path.\n"
+            f"- {verification_targets[2]}: perform at least one nearby regression or boundary probe.\n"
+            "If any of these targets cannot be validated because context or environment is missing, state that explicitly and return PARTIAL instead of guessing.\n"
+        )
 
     def _record_agent_observation(self, state: RepairRuntimeState, result: AgentToolResult) -> None:
         plan_fallback = self._apply_plan_fallback(state, result)
@@ -393,9 +414,6 @@ class RepairOrchestrator:
             state.artifacts[result.agent_type]["fallback_files_to_modify"] = list(plan_fallback.files_to_modify)
         if result.agent_type == "verify":
             state.artifacts["_repair_iterations_used"] = self._repair_iterations_used(state) + 1
-            state.post_verify_finalization_pending = True
-        else:
-            state.post_verify_finalization_pending = False
         state.add_message(self._build_agent_tool_result_message(result))
         if result.error:
             state.record_error(
@@ -712,21 +730,16 @@ class RepairOrchestrator:
     def _finalize_from_main_turn(self, state: RepairRuntimeState, final_text: str) -> None:
         verification_output = (state.artifacts.get("verify") or {}).get("output", {})
         verification_result = verification_output.get("verification_result", {})
-        verdict = verification_result.get("verdict")
+        verification_report = str(verification_output.get("verification_report", ""))
+        verdict = str(verification_result.get("verdict") or "").upper().strip()
+        if not verdict and verification_report:
+            verdict = self._infer_verification_report_verdict(verification_report)
         ready_for_pr = verification_result.get("ready_for_pr")
-        if verdict == "PASS" and ready_for_pr is True:
+        if verdict == "PASS" or ready_for_pr is True:
             state.mark_done(
                 final_status="READY_FOR_PR",
                 exit_reason="verify_passed",
                 ready_for_pr=True,
-            )
-            return
-        if verdict in {"FAIL", "PARTIAL"}:
-            self._record_verify_failure_error(state, verification_result)
-            state.mark_done(
-                final_status="NEED_HUMAN_REVIEW",
-                exit_reason="verify_not_ready",
-                need_human_review=True,
             )
             return
 
@@ -736,6 +749,13 @@ class RepairOrchestrator:
                 final_status="READY_FOR_PR",
                 exit_reason="main_thread_final",
                 ready_for_pr=True,
+            )
+            return
+        if "NEED_HUMAN_REVIEW" in normalized:
+            state.mark_done(
+                final_status="NEED_HUMAN_REVIEW",
+                exit_reason="main_thread_final",
+                need_human_review=True,
             )
             return
         if "FAILED" in normalized:
@@ -761,22 +781,15 @@ class RepairOrchestrator:
     def _repair_iterations_used(self, state: RepairRuntimeState) -> int:
         return int(state.artifacts.get("_repair_iterations_used", 0))
 
-    def _record_verify_failure_error(
-        self,
-        state: RepairRuntimeState,
-        verification_result: dict[str, Any],
-    ) -> None:
-        verdict = verification_result.get("verdict")
-        if verdict == "FAIL":
-            state.record_error(
-                make_error(
-                    code=VERIFY_TARGETED_TEST_FAILED,
-                    message="Verification reported FAIL.",
-                    retryable=False,
-                    stage="VERIFY",
-                    source="RepairOrchestrator",
-                )
-            )
+    def _infer_verification_report_verdict(self, verification_report: str) -> str:
+        normalized = verification_report.upper()
+        if "VERDICT: PASS" in normalized:
+            return "PASS"
+        if "VERDICT: FAIL" in normalized:
+            return "FAIL"
+        if "VERDICT: PARTIAL" in normalized:
+            return "PARTIAL"
+        return ""
 
 
 def run(

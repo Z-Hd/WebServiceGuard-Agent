@@ -39,7 +39,7 @@ BUILTIN_AGENTS: Dict[str, AgentDefinition] = {
         agent_type="plan",
         description="根据探查到的代码根因分析，生成详细的代码修改计划（Step-by-Step）。不修改代码。",
         system_prompt=build_plan_system_prompt(),
-        tools=["read", "grep", "glob"],
+        tools=["read", "grep", "glob", "bash"],
         permission_mode="plan",
         read_only=True,
     ),
