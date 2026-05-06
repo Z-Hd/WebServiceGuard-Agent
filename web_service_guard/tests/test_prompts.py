@@ -43,6 +43,9 @@ def test_orchestrator_system_prompt_mentions_agent_only_coordination() -> None:
     assert "First absorb the full `verification_report`" in prompt
     assert "If the verification report suggests the root-cause judgment was wrong or incomplete, call `explore`." in prompt
     assert "If the verification report identifies a concrete patch problem or an obvious follow-up code change, call `execute`." in prompt
+    assert "When `execute` reports `need_replan=True`, do not stop immediately." in prompt
+    assert "If `execute` says the plan no longer matches the file contents or the implementation approach is insufficient, call `plan`." in prompt
+    assert "If `execute` changed no files and the root cause may be wrong or context is missing, call `explore`." in prompt
 
 
 def test_orchestrator_initial_messages_include_bug_event_and_traceback() -> None:

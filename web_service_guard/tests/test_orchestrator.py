@@ -1300,7 +1300,7 @@ def test_orchestrator_plan_fallback_blocks_on_high_risk_plan() -> None:
     assert result["artifacts"]["plan"]["fallback_reason"] == "fallback_blocked_high_risk_plan"
 
 
-def test_orchestrator_escalates_when_execute_needs_replan() -> None:
+def test_orchestrator_execute_need_replan_allows_main_thread_to_continue() -> None:
     main_adapter = StubMainLLMAdapter(
         [
             AgentTurn(
@@ -1313,11 +1313,17 @@ def test_orchestrator_escalates_when_execute_needs_replan() -> None:
                 content="Execute the plan",
                 tool_call=ToolCall(name="agent", arguments={"agent_type": "execute", "description": "Apply patch", "prompt": "Apply the planned fix"}),
             ),
+            AgentTurn(
+                kind="tool",
+                content="Replan after execute feedback",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "description": "Revise plan", "prompt": "Revise the repair plan using the execute feedback"}),
+            ),
+            AgentTurn(kind="final", content="NEED_HUMAN_REVIEW"),
         ]
     )
     fake_agent_tool = FakeAgentTool(
         {
-            "explore": [make_agent_result(agent_type="explore", summary="Located bug in app.py")],
+            "explore": [make_agent_result(agent_type="explore", summary="Located bug in app.py", output=make_explore_output())],
             "execute": [
                 make_agent_result(
                     agent_type="execute",
@@ -1335,13 +1341,268 @@ def test_orchestrator_escalates_when_execute_needs_replan() -> None:
                         "need_replan": True,
                     },
                 )
-            ]
+            ],
+            "plan": [
+                make_agent_result(
+                    agent_type="plan",
+                    summary="Revised plan after execute mismatch",
+                    output=make_plan_output(),
+                )
+            ],
         }
     )
 
     result = run(make_task_input(), llm_adapter=main_adapter, agent_tool=fake_agent_tool)
 
     assert result["final_status"] == "NEED_HUMAN_REVIEW"
+    assert len(fake_agent_tool.calls) == 3
+    assert fake_agent_tool.calls[2]["agent_tool"] == "plan"
+
+
+def test_orchestrator_can_continue_after_execute_need_replan_and_reach_ready_for_pr() -> None:
+    main_adapter = StubMainLLMAdapter(
+        [
+            AgentTurn(
+                kind="tool",
+                content="Explore first",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "description": "Traceback review", "prompt": "Investigate traceback"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Plan first patch",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "description": "Plan repair", "prompt": "Create a repair plan"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Apply first patch",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "execute", "description": "Apply patch", "prompt": "Apply the planned fix"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Revise the plan after execute feedback",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "description": "Revise plan", "prompt": "Revise the repair plan using the execute feedback"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Apply refined patch",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "execute", "description": "Apply refined patch", "prompt": "Apply the refined fix"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Verify the refined patch",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "verify", "description": "Verify refined patch", "prompt": "Verify and return PASS if fixed"}),
+            ),
+            AgentTurn(kind="final", content="READY_FOR_PR"),
+        ]
+    )
+    fake_agent_tool = FakeAgentTool(
+        {
+            "explore": [make_agent_result(agent_type="explore", summary="Located bug in app.py", output=make_explore_output())],
+            "plan": [
+                make_agent_result(agent_type="plan", summary="Initial plan", output=make_plan_output()),
+                make_agent_result(agent_type="plan", summary="Refined plan", output=make_plan_output()),
+            ],
+            "execute": [
+                make_agent_result(
+                    agent_type="execute",
+                    summary="Execution could not apply the patch",
+                    output={
+                        "patch_result": {
+                            "modified_files": [],
+                            "patch_summary": [],
+                            "test_updates": [],
+                        },
+                        "plan_deviation": {
+                            "deviated": True,
+                            "reason": "execution_did_not_produce_modifications",
+                        },
+                        "need_replan": True,
+                    },
+                ),
+                make_agent_result(
+                    agent_type="execute",
+                    summary="Refined patch applied successfully",
+                    output=make_execute_output(modified_files=["app.py"]),
+                ),
+            ],
+            "verify": [
+                make_agent_result(
+                    agent_type="verify",
+                    summary="VERDICT: PASS",
+                    output=make_verification_output(
+                        verdict="PASS",
+                        gate_status="PASS",
+                        gate_reason="verification_evidence_sufficient",
+                        ready_for_pr=True,
+                        targeted_tests_passed=True,
+                        smoke_tests_passed=True,
+                    ),
+                )
+            ],
+        }
+    )
+
+    result = run(make_task_input(), llm_adapter=main_adapter, agent_tool=fake_agent_tool)
+
+    assert result["final_status"] == "READY_FOR_PR"
+    assert [call["agent_tool"] for call in fake_agent_tool.calls] == [
+        "explore",
+        "plan",
+        "execute",
+        "plan",
+        "execute",
+        "verify",
+    ]
+
+
+def test_orchestrator_can_continue_after_execute_with_no_modified_files_and_reach_ready_for_pr() -> None:
+    main_adapter = StubMainLLMAdapter(
+        [
+            AgentTurn(
+                kind="tool",
+                content="Explore first",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "description": "Traceback review", "prompt": "Investigate traceback"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Plan first patch",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "description": "Plan repair", "prompt": "Create a repair plan"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Apply first patch",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "execute", "description": "Apply patch", "prompt": "Apply the planned fix"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Re-explore because execute changed nothing",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "description": "Reinspect code", "prompt": "Reinspect the code because execute changed no files"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Replan after new context",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "plan", "description": "Refine plan", "prompt": "Create a refined repair plan"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Apply second patch",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "execute", "description": "Apply refined patch", "prompt": "Apply the refined fix"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Verify refined patch",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "verify", "description": "Verify refined patch", "prompt": "Verify and return PASS if fixed"}),
+            ),
+            AgentTurn(kind="final", content="READY_FOR_PR"),
+        ]
+    )
+    fake_agent_tool = FakeAgentTool(
+        {
+            "explore": [
+                make_agent_result(agent_type="explore", summary="Initial explore", output=make_explore_output()),
+                make_agent_result(agent_type="explore", summary="Second explore", output=make_explore_output()),
+            ],
+            "plan": [
+                make_agent_result(agent_type="plan", summary="Initial plan", output=make_plan_output()),
+                make_agent_result(agent_type="plan", summary="Refined plan", output=make_plan_output()),
+            ],
+            "execute": [
+                make_agent_result(
+                    agent_type="execute",
+                    summary="Execution made no changes",
+                    output={
+                        "patch_result": {
+                            "modified_files": [],
+                            "patch_summary": [],
+                            "test_updates": [],
+                        },
+                        "plan_deviation": {
+                            "deviated": False,
+                            "reason": None,
+                        },
+                        "need_replan": False,
+                    },
+                ),
+                make_agent_result(
+                    agent_type="execute",
+                    summary="Refined patch applied",
+                    output=make_execute_output(modified_files=["app.py"]),
+                ),
+            ],
+            "verify": [
+                make_agent_result(
+                    agent_type="verify",
+                    summary="VERDICT: PASS",
+                    output=make_verification_output(
+                        verdict="PASS",
+                        gate_status="PASS",
+                        gate_reason="verification_evidence_sufficient",
+                        ready_for_pr=True,
+                        targeted_tests_passed=True,
+                        smoke_tests_passed=True,
+                    ),
+                )
+            ],
+        }
+    )
+
+    result = run(make_task_input(), llm_adapter=main_adapter, agent_tool=fake_agent_tool)
+
+    assert result["final_status"] == "READY_FOR_PR"
+    assert [call["agent_tool"] for call in fake_agent_tool.calls] == [
+        "explore",
+        "plan",
+        "execute",
+        "explore",
+        "plan",
+        "execute",
+        "verify",
+    ]
+
+
+def test_orchestrator_respects_main_thread_failed_after_execute_feedback() -> None:
+    main_adapter = StubMainLLMAdapter(
+        [
+            AgentTurn(
+                kind="tool",
+                content="Explore first",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "explore", "description": "Traceback review", "prompt": "Investigate traceback"}),
+            ),
+            AgentTurn(
+                kind="tool",
+                content="Apply patch",
+                tool_call=ToolCall(name="agent", arguments={"agent_type": "execute", "description": "Apply patch", "prompt": "Apply the planned fix"}),
+            ),
+            AgentTurn(kind="final", content="FAILED: execute feedback shows the current strategy is not viable"),
+        ]
+    )
+    fake_agent_tool = FakeAgentTool(
+        {
+            "explore": [make_agent_result(agent_type="explore", summary="Located bug in app.py", output=make_explore_output())],
+            "execute": [
+                make_agent_result(
+                    agent_type="execute",
+                    summary="Execution made no changes",
+                    output={
+                        "patch_result": {
+                            "modified_files": [],
+                            "patch_summary": [],
+                            "test_updates": [],
+                        },
+                        "plan_deviation": {
+                            "deviated": True,
+                            "reason": "execution_did_not_produce_modifications",
+                        },
+                        "need_replan": True,
+                    },
+                )
+            ],
+        }
+    )
+
+    result = run(make_task_input(), llm_adapter=main_adapter, agent_tool=fake_agent_tool)
+
+    assert result["final_status"] == "FAILED"
 
 
 def test_orchestrator_rejects_execute_as_first_action() -> None:

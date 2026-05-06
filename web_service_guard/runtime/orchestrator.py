@@ -459,8 +459,6 @@ class RepairOrchestrator:
             return self._explore_requires_human_review(result)
         if result.agent_type == "plan":
             return self._plan_requires_human_review(result)
-        if result.agent_type == "execute":
-            return self._execute_requires_human_review(result)
         return False
 
     def _explore_requires_human_review(self, result: AgentToolResult) -> bool:
@@ -715,17 +713,6 @@ class RepairOrchestrator:
         if not evidence:
             evidence.append("Fallback accepted plan summary as actionable against explore context")
         return evidence
-
-    def _execute_requires_human_review(self, result: AgentToolResult) -> bool:
-        output = result.output
-        patch_result = output.get("patch_result", {})
-        modified_files = patch_result.get("modified_files", [])
-        need_replan = output.get("need_replan")
-        return (
-            need_replan is True
-            or not isinstance(modified_files, list)
-            or len(modified_files) == 0
-        )
 
     def _finalize_from_main_turn(self, state: RepairRuntimeState, final_text: str) -> None:
         verification_output = (state.artifacts.get("verify") or {}).get("output", {})
