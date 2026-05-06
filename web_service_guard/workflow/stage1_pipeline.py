@@ -127,7 +127,7 @@ class StageOnePipeline:
             if not tasks:
                 return {
                     "status": "NO_EVENTS",
-                    "message": "未发现可进入修复阶段的事件",
+                    "message": "No repairable events were found.",
                 }
             return {
                 "status": "READY_FOR_REPAIR",

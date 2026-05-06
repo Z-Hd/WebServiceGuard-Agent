@@ -45,7 +45,7 @@ from web_service_guard.tools.GrepTool import GrepTool
 from web_service_guard.tools.base import BaseTool, ToolRegistry
 from web_service_guard.agents.sentinel_agent import SentinelAgent
 from web_service_guard.monitoring.traceback_collector import TracebackCollector
-from web_service_guard.workflow.repair_pipeline import StageOnePipeline
+from web_service_guard.workflow.stage1_pipeline import StageOnePipeline
 
 
 DEMO_ROOT = Path("/tmp/web_service_guard_verify_demo")

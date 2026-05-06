@@ -28,7 +28,7 @@ for path in (str(PROJECT_ROOT), str(PACKAGE_ROOT)):
 
 from web_service_guard.agents.sentinel_agent import SentinelAgent
 from web_service_guard.monitoring.traceback_collector import TracebackCollector
-from web_service_guard.workflow.repair_pipeline import StageOnePipeline
+from web_service_guard.workflow.stage1_pipeline import StageOnePipeline
 
 
 DEFAULT_DEMO_ROOT = Path("/tmp/web_service_guard_verify_demo")

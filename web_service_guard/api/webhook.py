@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify
-from web_service_guard.workflow.repair_pipeline import StageOnePipeline
+from web_service_guard.workflow.stage1_pipeline import StageOnePipeline
 
 app = Flask(__name__)
 pipeline = StageOnePipeline()

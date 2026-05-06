@@ -1571,7 +1571,7 @@ web_service_guard/
 │
 ├── workflow/
 │   ├── __init__.py
-│   ├── repair_pipeline.py
+│   ├── stage1_pipeline.py
 │   ├── stage_router.py
 │   └── recovery.py
 │
@@ -1840,7 +1840,7 @@ web_service_guard/
 
 `workflow/` 负责三阶段之间的系统级串联，不进入第二阶段内部的详细推理。
 
-#### `workflow/repair_pipeline.py`
+#### `workflow/stage1_pipeline.py`
 
 系统级总流程入口，负责：
 

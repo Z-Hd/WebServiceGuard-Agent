@@ -55,6 +55,12 @@ audit/
 *.tmp
 *.temp
 tmp_agent_tool_*.py
+.tmp/
+delivery_temp_run/
+stage2_pytest_tmp/
+stage2_pytest_tmp_case/
+windows_os_tmp/
+windows_os_tmp_case/
 
 # Environment variables
 .env
@@ -62,3 +68,7 @@ tmp_agent_tool_*.py
 
 # Local demos and scratch examples
 examples/
+
+# Tests not intended for upload
+tests/
+web_service_guard/tests/

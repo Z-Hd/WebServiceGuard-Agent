@@ -43,7 +43,7 @@ from web_service_guard.tools.FileReadTool import FileReadTool
 from web_service_guard.tools.GlobTool import GlobTool
 from web_service_guard.tools.GrepTool import GrepTool
 from web_service_guard.tools.base import ToolRegistry
-from web_service_guard.workflow.repair_pipeline import StageOnePipeline
+from web_service_guard.workflow.stage1_pipeline import StageOnePipeline
 
 
 DEFAULT_RUNTIME_ROOT = Path(r"E:\projeccts\demo-web-service-runtime")
