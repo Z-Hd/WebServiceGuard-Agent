@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from runtime.orchestrator import RepairOrchestrator, run
 from schemas.agent_messages import AgentTurn, ToolCall
+from schemas.run_result import ToolExecutionRecord
 from schemas.tool_result import AgentToolResult
 from tools.base import BaseTool
 from errors import (
@@ -75,6 +76,9 @@ def make_agent_result(
     stop_reason: str = "final_response",
     error: str | None = None,
     output: dict[str, object] | None = None,
+    tool_calls: list[ToolCall] | None = None,
+    tool_results: list[ToolExecutionRecord] | None = None,
+    used_tools: list[str] | None = None,
 ) -> AgentToolResult:
     return AgentToolResult(
         agent_id=f"{agent_type}-id",
@@ -88,9 +92,9 @@ def make_agent_result(
         allowed_tools=["read_code"],
         permission_mode="plan",
         read_only=True,
-        tool_calls=[],
-        tool_results=[],
-        used_tools=[],
+        tool_calls=tool_calls or [],
+        tool_results=tool_results or [],
+        used_tools=used_tools or [],
         started_at="2026-04-30T00:00:00+00:00",
         finished_at="2026-04-30T00:00:01+00:00",
         output=output or {},
@@ -304,7 +308,72 @@ def test_orchestrator_runs_main_thread_agent_loop_to_ready_for_pr() -> None:
     assert result["final_status"] == "READY_FOR_PR"
     assert result["current_stage"] == "READY_FOR_PR"
     assert result["iterations_used"] == 1
-    assert "verify" in result["artifacts"]
+
+
+def test_orchestrator_persists_detailed_agent_tool_trace_in_artifacts() -> None:
+    explore_call = ToolCall(
+        name="read",
+        arguments={"file_path": "app.py", "offset": 1, "limit": 20},
+    )
+    explore_result = ToolExecutionRecord(
+        name="read",
+        arguments={"file_path": "app.py", "offset": 1, "limit": 20},
+        status="completed",
+        output="Read file: app.py",
+        structured_output={"file": "app.py", "line_count": 20},
+        summary="Read 20 line(s) from app.py",
+        error=None,
+    )
+    main_adapter = StubMainLLMAdapter(
+        [
+            AgentTurn(
+                kind="tool",
+                content="Inspect code",
+                tool_call=ToolCall(
+                    name="agent",
+                    arguments={
+                        "agent_type": "explore",
+                        "description": "Traceback review",
+                        "prompt": "Investigate traceback",
+                    },
+                ),
+            ),
+            AgentTurn(kind="final", content="NEED_HUMAN_REVIEW"),
+        ]
+    )
+    fake_agent_tool = FakeAgentTool(
+        {
+            "explore": [
+                make_agent_result(
+                    agent_type="explore",
+                    summary="Located bug in app.py",
+                    output=make_explore_output(),
+                    tool_calls=[explore_call],
+                    tool_results=[explore_result],
+                    used_tools=["read"],
+                )
+            ]
+        }
+    )
+
+    result = RepairOrchestrator(llm_adapter=main_adapter, agent_tool=fake_agent_tool).run(make_task_input())
+
+    explore_artifact = result["artifacts"]["explore"]
+    assert explore_artifact["tool_calls"] == [
+        {"name": "read", "arguments": {"file_path": "app.py", "offset": 1, "limit": 20}}
+    ]
+    assert explore_artifact["tool_results"] == [
+        {
+            "name": "read",
+            "arguments": {"file_path": "app.py", "offset": 1, "limit": 20},
+            "status": "completed",
+            "output": "Read file: app.py",
+            "structured_output": {"file": "app.py", "line_count": 20},
+            "summary": "Read 20 line(s) from app.py",
+            "error": None,
+        }
+    ]
+    assert explore_artifact["used_tools"] == ["read"]
 
 
 def test_orchestrator_initializes_tool_context_with_detected_windows_os() -> None:

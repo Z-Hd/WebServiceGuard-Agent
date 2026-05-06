@@ -404,8 +404,13 @@ class RepairOrchestrator:
             "used_tools": list(result.used_tools),
             "permission_mode": result.permission_mode,
             "read_only": result.read_only,
+            "turn_count": result.turn_count,
+            "started_at": result.started_at,
+            "finished_at": result.finished_at,
             "output": result.output,
             "artifacts": list(result.artifacts),
+            "tool_calls": [self._serialize_tool_call(record) for record in result.tool_calls],
+            "tool_results": [self._serialize_tool_result(record) for record in result.tool_results],
             "errors": list(result.errors),
         }
         if result.agent_type == "plan" and plan_fallback is not None:
@@ -425,6 +430,23 @@ class RepairOrchestrator:
                     source="RepairOrchestrator",
                 )
             )
+
+    def _serialize_tool_call(self, record: ToolCall) -> dict[str, Any]:
+        return {
+            "name": record.name,
+            "arguments": dict(record.arguments),
+        }
+
+    def _serialize_tool_result(self, record: Any) -> dict[str, Any]:
+        return {
+            "name": record.name,
+            "arguments": dict(record.arguments),
+            "status": record.status,
+            "output": record.output,
+            "structured_output": record.structured_output,
+            "summary": record.summary,
+            "error": record.error,
+        }
 
     def _build_agent_tool_result_message(self, result: AgentToolResult) -> MessageLike:
         observation = {

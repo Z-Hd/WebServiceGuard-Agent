@@ -117,6 +117,7 @@ def main() -> None:
     orchestrator = build_orchestrator()
     repair_result = orchestrator.run(stage_two_input)
     write_json(output_dir / "phase_two_result.json", repair_result)
+    write_phase_two_agent_trace_log(output_dir / "phase_two_agent_trace.log", repair_result)
     print(f"phase_two final_status: {repair_result.get('final_status')}")
     print_phase_two_diagnostics(repair_result)
 
@@ -397,6 +398,26 @@ def print_phase_two_diagnostics(repair_result: dict[str, Any]) -> None:
             modified_files = ((output.get("patch_result") or {}).get("modified_files") or [])
             print(f"  modified_files={modified_files}")
             print(f"  need_replan={output.get('need_replan')}")
+            tool_calls = stage_payload.get("tool_calls") or []
+            tool_results = stage_payload.get("tool_results") or []
+            if tool_calls:
+                print(f"  tool_call_count={len(tool_calls)}")
+                for idx, tool_call in enumerate(tool_calls[-3:], start=max(len(tool_calls) - 2, 1)):
+                    arguments = shorten_for_console(json.dumps(tool_call.get("arguments", {}), ensure_ascii=False), 160)
+                    print(
+                        f"  tool_call[{idx}]: name={tool_call.get('name')} "
+                        f"arguments={arguments}"
+                    )
+            if tool_results:
+                for idx, tool_result in enumerate(tool_results[-3:], start=max(len(tool_results) - 2, 1)):
+                    print(
+                        f"  tool_result[{idx}]: name={tool_result.get('name')} "
+                        f"status={tool_result.get('status')} "
+                        f"summary={shorten_for_console(str(tool_result.get('summary', '')), 160)}"
+                    )
+                    error = str(tool_result.get("error", "")).strip()
+                    if error:
+                        print(f"    error={shorten_for_console(error, 160)}")
 
         if stage_name == "verify":
             output = stage_payload.get("output") or {}
@@ -446,6 +467,68 @@ def shorten_for_console(text: str, limit: int = 220) -> str:
     if len(normalized) <= limit:
         return normalized
     return normalized[:limit] + " ..."
+
+
+def write_phase_two_agent_trace_log(path: Path, repair_result: dict[str, Any]) -> None:
+    lines: list[str] = []
+    lines.append("=== PHASE TWO AGENT TRACE ===")
+    lines.append(f"run_id: {repair_result.get('run_id')}")
+    lines.append(f"final_status: {repair_result.get('final_status')}")
+    lines.append(f"iterations_used: {repair_result.get('iterations_used')}")
+    lines.append("")
+
+    artifacts = repair_result.get("artifacts") or {}
+    for stage_name in ("explore", "plan", "execute", "verify"):
+        stage_payload = artifacts.get(stage_name)
+        if not isinstance(stage_payload, dict):
+            continue
+
+        lines.append(f"=== STAGE: {stage_name.upper()} ===")
+        lines.append(f"status: {stage_payload.get('status')}")
+        lines.append(f"stop_reason: {stage_payload.get('stop_reason')}")
+        lines.append(f"summary: {stage_payload.get('summary')}")
+        lines.append(f"used_tools: {json.dumps(stage_payload.get('used_tools') or [], ensure_ascii=False)}")
+        lines.append(f"turn_count: {stage_payload.get('turn_count')}")
+        lines.append(f"started_at: {stage_payload.get('started_at')}")
+        lines.append(f"finished_at: {stage_payload.get('finished_at')}")
+
+        tool_calls = stage_payload.get("tool_calls") or []
+        lines.append(f"tool_call_count: {len(tool_calls)}")
+        for idx, tool_call in enumerate(tool_calls, start=1):
+            lines.append(f"  - tool_call[{idx}].name: {tool_call.get('name')}")
+            lines.append(
+                "    tool_call[{idx}].arguments: {arguments}".format(
+                    idx=idx,
+                    arguments=json.dumps(tool_call.get("arguments", {}), ensure_ascii=False, indent=2),
+                )
+            )
+
+        tool_results = stage_payload.get("tool_results") or []
+        lines.append(f"tool_result_count: {len(tool_results)}")
+        for idx, tool_result in enumerate(tool_results, start=1):
+            lines.append(f"  - tool_result[{idx}].name: {tool_result.get('name')}")
+            lines.append(f"    tool_result[{idx}].status: {tool_result.get('status')}")
+            lines.append(f"    tool_result[{idx}].summary: {tool_result.get('summary')}")
+            lines.append(f"    tool_result[{idx}].error: {tool_result.get('error')}")
+            lines.append(
+                "    tool_result[{idx}].arguments: {arguments}".format(
+                    idx=idx,
+                    arguments=json.dumps(tool_result.get("arguments", {}), ensure_ascii=False, indent=2),
+                )
+            )
+            lines.append(
+                "    tool_result[{idx}].structured_output: {output}".format(
+                    idx=idx,
+                    output=json.dumps(tool_result.get("structured_output"), ensure_ascii=False, indent=2),
+                )
+            )
+
+        errors = stage_payload.get("errors") or []
+        if errors:
+            lines.append(f"errors: {json.dumps(errors, ensure_ascii=False, indent=2)}")
+        lines.append("")
+
+    path.write_text("\n".join(lines), encoding="utf-8")
 
 
 if __name__ == "__main__":

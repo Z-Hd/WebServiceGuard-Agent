@@ -68,25 +68,13 @@ class RepoWorkspaceManager:
                     return result
                 self._rebuild_workspace(request, repo_root, result, reason="workspace remote does not match requested repository")
 
-            self._run_git(repo_root, result, "fetch", "origin")
-            result.fetched = True
-            self._ensure_branch_exists(repo_root, request.branch, result)
+            self._synchronize_workspace(
+                request,
+                repo_root,
+                result,
+                allow_rebuild_on_dirty=request.managed_workspace,
+            )
             if result.errors:
-                return result
-
-            self._run_git(repo_root, result, "checkout", "-B", request.branch, f"origin/{request.branch}")
-            self._run_git(repo_root, result, "clean", "-fd")
-            result.synced_with_remote = True
-            result.clean_worktree = self._is_worktree_clean(repo_root)
-
-            if request.require_clean_worktree and not result.clean_worktree:
-                self._append_error(
-                    result,
-                    code="WORKSPACE_DIRTY_AFTER_SYNC",
-                    message=(
-                        "Workspace is still dirty after reset and clean, and cannot be used for automated repair."
-                    ),
-                )
                 return result
 
             result.current_branch = self._get_current_branch(repo_root)
@@ -129,7 +117,7 @@ class RepoWorkspaceManager:
             create_repair_branch=create_repair_branch,
             require_clean_worktree=require_clean_worktree,
             managed_workspace=True,
-        )
+            )
         return self.prepare(request)
 
     def prepare_prepared_task(
@@ -148,6 +136,51 @@ class RepoWorkspaceManager:
             repair_task=repair_task,
             workspace=workspace,
         )
+
+    def _synchronize_workspace(
+        self,
+        request: RepoWorkspaceRequest,
+        repo_root: Path,
+        result: RepoWorkspaceResult,
+        *,
+        allow_rebuild_on_dirty: bool,
+    ) -> None:
+        self._run_git(repo_root, result, "fetch", "origin")
+        result.fetched = True
+        self._ensure_branch_exists(repo_root, request.branch, result)
+        if result.errors:
+            return
+
+        remote_branch = f"origin/{request.branch}"
+        self._run_git(repo_root, result, "checkout", "-B", request.branch, remote_branch)
+        self._run_git(repo_root, result, "reset", "--hard", remote_branch)
+        self._run_git(repo_root, result, "clean", "-fd")
+        result.synced_with_remote = True
+        result.clean_worktree = self._is_worktree_clean(repo_root)
+
+        if request.require_clean_worktree and not result.clean_worktree:
+            if allow_rebuild_on_dirty and request.managed_workspace:
+                self._rebuild_workspace(
+                    request,
+                    repo_root,
+                    result,
+                    reason="workspace remained dirty after reset/clean",
+                )
+                self._synchronize_workspace(
+                    request,
+                    Path(request.repo_root),
+                    result,
+                    allow_rebuild_on_dirty=False,
+                )
+                return
+            self._append_error(
+                result,
+                code="WORKSPACE_DIRTY_AFTER_SYNC",
+                message=(
+                    "Workspace remained dirty after fetch, checkout, reset, and clean; "
+                    "automated preparation could not produce a usable workspace."
+                ),
+            )
 
     def _clone_repo(
         self,
